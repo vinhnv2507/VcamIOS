@@ -35,6 +35,9 @@ jobs:
             curl -sL https://github.com/L1ghtmann/llvm-project/releases/latest/download/iOSToolchain-x86_64.tar.xz | tar -xJf - -C $THEOS/toolchain/
           fi
 
+      - name: Fix line endings
+        run: sed -i 's/\r$//' control Makefile Tweak.x image_utils.m image_utils.h vcam.plist
+
       - name: Build package
         run: make package FINALPACKAGE=1
 
