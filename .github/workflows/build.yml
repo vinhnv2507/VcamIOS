@@ -19,19 +19,20 @@ jobs:
         uses: actions/cache@v4
         with:
           path: ${{ env.THEOS }}
-          key: theos-${{ runner.os }}-v2
+          key: theos-${{ runner.os }}-v3
 
-      - name: Install Theos + SDK
+      - name: Install Theos + SDK + Toolchain
         run: |
           if [ ! -d "$THEOS" ]; then
             sudo apt-get update
-            sudo apt-get install -y fakeroot perl rsync unzip curl git
+            sudo apt-get install -y fakeroot perl rsync unzip curl git xz-utils libtinfo6
             git clone --recursive https://github.com/theos/theos.git $THEOS
             curl -LO https://github.com/theos/sdks/archive/refs/heads/master.zip
             unzip -q master.zip
             mkdir -p $THEOS/sdks
             mv sdks-master/* $THEOS/sdks/
             rm -rf sdks-master master.zip
+            curl -sL https://github.com/L1ghtmann/llvm-project/releases/latest/download/iOSToolchain-x86_64.tar.xz | tar -xJf - -C $THEOS/toolchain/
           fi
 
       - name: Build package
