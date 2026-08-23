@@ -19,7 +19,7 @@ jobs:
         uses: actions/cache@v4
         with:
           path: ${{ env.THEOS }}
-          key: theos-${{ runner.os }}-v1
+          key: theos-${{ runner.os }}-v2
 
       - name: Install Theos + SDK
         run: |
@@ -27,11 +27,11 @@ jobs:
             sudo apt-get update
             sudo apt-get install -y fakeroot perl rsync unzip curl git
             git clone --recursive https://github.com/theos/theos.git $THEOS
-            curl -LO https://github.com/theos/sdks/archive/refs/heads/main.zip
-            unzip -q main.zip
+            curl -LO https://github.com/theos/sdks/archive/refs/heads/master.zip
+            unzip -q master.zip
             mkdir -p $THEOS/sdks
-            mv sdks-main/* $THEOS/sdks/
-            rm -rf sdks-main main.zip
+            mv sdks-master/* $THEOS/sdks/
+            rm -rf sdks-master master.zip
           fi
 
       - name: Build package
