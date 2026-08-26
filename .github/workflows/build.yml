@@ -20,6 +20,14 @@ jobs:
       - name: Build Debian package
         run: make package FINALPACKAGE=1
 
+      - name: Validate Debian package
+        run: |
+          deb="$(find packages -maxdepth 1 -name '*.deb' -print -quit)"
+          test -n "$deb"
+          dpkg-deb --info "$deb"
+          test "$(dpkg-deb --field "$deb" Package)" = "com.yourcompany.vcam"
+          test "$(dpkg-deb --field "$deb" Architecture)" = "iphoneos-arm64"
+
       - name: Upload package
         uses: actions/upload-artifact@v4
         with:
@@ -31,10 +39,10 @@ jobs:
         env:
           GH_TOKEN: ${{ github.token }}
         run: |
-          if gh release view latest-build >/dev/null 2>&1; then
-            gh release upload latest-build packages/*.deb --clobber
+          if gh release view sileo-compatible >/dev/null 2>&1; then
+            gh release upload sileo-compatible packages/*.deb --clobber
           else
-            gh release create latest-build packages/*.deb \
-              --title "Latest VCam build" \
-              --notes "Automatic rootless build. Download the .deb file directly; do not install the artifact ZIP."
+            gh release create sileo-compatible packages/*.deb \
+              --title "VCam – Sileo-compatible build" \
+              --notes "Rootless package built and validated with dpkg-deb. Download the .deb file directly."
           fi
