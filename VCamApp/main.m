@@ -1,10 +1,11 @@
 #import <UIKit/UIKit.h>
-#import <MobileCoreServices/MobileCoreServices.h>
 #import <CoreFoundation/CoreFoundation.h>
 
 static NSString *const VCamPreferencesPath = @"/var/mobile/Library/Preferences/com.yourcompany.vcam.plist";
 static NSString *const VCamMediaDirectory = @"/var/mobile/Media/VCam";
 static NSString *const VCamNotificationName = @"com.yourcompany.vcam.prefs.changed";
+static NSString *const VCamImageMediaType = @"public.image";
+static NSString *const VCamMovieMediaType = @"public.movie";
 
 @interface VCamViewController : UIViewController <UIImagePickerControllerDelegate, UINavigationControllerDelegate>
 @property(nonatomic, strong) UISwitch *enabledSwitch;
@@ -183,11 +184,11 @@ static NSString *const VCamNotificationName = @"com.yourcompany.vcam.prefs.chang
 }
 
 - (void)selectImage {
-    [self presentPickerForMediaType:(__bridge NSString *)kUTTypeImage];
+    [self presentPickerForMediaType:VCamImageMediaType];
 }
 
 - (void)selectVideo {
-    [self presentPickerForMediaType:(__bridge NSString *)kUTTypeMovie];
+    [self presentPickerForMediaType:VCamMovieMediaType];
 }
 
 - (void)presentPickerForMediaType:(NSString *)mediaType {
@@ -213,14 +214,14 @@ didFinishPickingMediaWithInfo:(NSDictionary<UIImagePickerControllerInfoKey, id> 
     NSError *error = nil;
     NSString *destination = nil;
 
-    if ([mediaType isEqualToString:(__bridge NSString *)kUTTypeImage]) {
+    if ([mediaType isEqualToString:VCamImageMediaType]) {
         UIImage *image = info[UIImagePickerControllerOriginalImage];
         NSData *data = UIImageJPEGRepresentation(image, 0.92);
         destination = [VCamMediaDirectory stringByAppendingPathComponent:@"replacement.jpg"];
         if (!data || ![data writeToFile:destination options:NSDataWritingAtomic error:&error]) {
             destination = nil;
         }
-    } else if ([mediaType isEqualToString:(__bridge NSString *)kUTTypeMovie]) {
+    } else if ([mediaType isEqualToString:VCamMovieMediaType]) {
         NSURL *sourceURL = info[UIImagePickerControllerMediaURL];
         NSString *extension = sourceURL.pathExtension.lowercaseString;
         if (![@[@"mp4", @"mov", @"m4v"] containsObject:extension]) extension = @"mov";
