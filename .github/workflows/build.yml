@@ -69,6 +69,7 @@ jobs:
             echo "Suite: stable"
             echo "Codename: neko-rootful"
             echo "Architectures: iphoneos-arm"
+            echo "Components: main"
             echo "Description: VCam rootful repository"
             apt-ftparchive release .
           } > Release
