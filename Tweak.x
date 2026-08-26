@@ -1,4 +1,24 @@
+#import <CoreMedia/CoreMedia.h>
+#import <CoreFoundation/CoreFoundation.h>
+#import <objc/message.h>
 #import "image_utils.h"
+
+// Track whether media was loaded for the current prefs; reload when it changes.
+static BOOL vcam_needsLoad = YES;
+
+static void vcam_ensureLoaded(void) {
+    if (vcam_needsLoad) {
+        // Reset the flag before loading so a failure doesn't busy-loop every frame.
+        vcam_needsLoad = NO;
+        loadReplacementMedia();
+    }
+}
+
+// Darwin notification callback: trigger a media reload when prefs change.
+static void vcamPrefsChanged(CFNotificationCenterRef center, void *observer,
+                             CFStringRef name, const void *object, CFDictionaryRef userInfo) {
+    vcam_needsLoad = YES;
+}
 
 %hook BWNodeOutput
 
@@ -15,20 +35,23 @@
         return;
     }
 
-    static dispatch_once_t onceToken;
-    dispatch_once(&onceToken, ^{
-        loadReplacementMedia();
-    });
+    // First frame: (re)load media from preferences.
+    vcam_ensureLoaded();
 
-    @try {
-        CVPixelBufferLockBaseAddress(originalImageBuffer, 0);
-        drawReplacementOntoBuffer(originalImageBuffer);
-    }
-    @finally {
-        CVPixelBufferUnlockBaseAddress(originalImageBuffer, 0);
-    }
+    drawReplacementOntoBuffer(originalImageBuffer);
 
     %orig(sampleBuffer);
 }
 
 %end
+
+%ctor {
+    // Watch for preference changes so media hot-reloads without a respring.
+    CFNotificationCenterAddObserver(
+        CFNotificationCenterGetDarwinNotifyCenter(),
+        NULL,
+        vcamPrefsChanged,
+        (__bridge CFStringRef)@"com.yourcompany.vcam.prefs.changed",
+        NULL,
+        CFNotificationSuspensionBehaviorDeliverImmediately);
+}

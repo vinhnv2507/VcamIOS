@@ -10,5 +10,6 @@ TWEAK_NAME = vcam
 
 vcam_FILES = Tweak.x image_utils.m
 vcam_CFLAGS = -fobjc-arc -Wno-deprecated-declarations
+vcam_FRAMEWORKS = AVFoundation CoreMedia CoreImage ImageIO Foundation
 
 include $(THEOS_MAKE_PATH)/tweak.mk

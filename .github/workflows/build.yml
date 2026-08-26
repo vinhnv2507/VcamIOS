@@ -1,0 +1,25 @@
+name: Build tweak
+
+on:
+  workflow_dispatch:
+  push:
+
+jobs:
+  package:
+    runs-on: ubuntu-latest
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      - name: Install Theos and iOS SDK
+        uses: Randomblock1/theos-action@v1
+
+      - name: Build Debian package
+        run: make package FINALPACKAGE=1
+
+      - name: Upload package
+        uses: actions/upload-artifact@v4
+        with:
+          name: vcam-deb
+          path: packages/*.deb
+          if-no-files-found: error
