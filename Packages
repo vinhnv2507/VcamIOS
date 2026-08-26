@@ -1,0 +1,17 @@
+Package: com.yourcompany.vcam
+Architecture: iphoneos-arm
+Version: 0.0.4
+Section: Tweaks
+Maintainer: vinhnv2507
+Installed-Size: 92
+Depends: mobilesubstrate
+Filename: ./com.yourcompany.vcam_0.0.4_iphoneos-arm.deb
+Size: 6840
+MD5sum: d2e71b66899ba0d16695ccef718b0932
+SHA1: d91f89e2c4ff00bffaaf82a7fd674a2ed77bd442
+SHA256: ad39f9cbd81e19f47d23d033dc102fb4e81f536ab6a1be217a352357ebea9446
+SHA512: a892bd81ab4cb31b18536d3a4712b5bb570876e1f29430717974b34ea6befbe86ba72d41f739c15b88c1ce425063dfd4ac9f346fcacc8835c2340042bdee4f2e
+Description: Virtual camera replacement for rootful jailbreaks.
+Name: vcam
+Author: vinhnv2507
+

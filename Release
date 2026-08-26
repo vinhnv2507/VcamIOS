@@ -1,0 +1,23 @@
+Origin: VCam
+Label: VCam for NekoJB
+Suite: stable
+Codename: neko-rootful
+Architectures: iphoneos-arm
+Description: VCam rootful repository
+Date: Wed, 26 Aug 2026 14:30:38 +0000
+MD5Sum:
+ 333f502b7a230b2d729d63b323343984              615 Packages
+ 57cc8f476fe3765b95f64e0a583210bf              439 Packages.gz
+ 2a2e59c7515e9930d3c89f79cc410af5              176 Release
+SHA1:
+ d38e00d0992c778b89b27f46ce4d0712b505fe7a              615 Packages
+ 6026ed8cacff488574870ba81c05a69ca56b80f8              439 Packages.gz
+ 19ffcf6f02cae12ac2c58e7aed009081a46fda64              176 Release
+SHA256:
+ 24a75c9c0ce7037fc1c0ae952755fc58c43d32375aabdda7b9befcc63f86e69c              615 Packages
+ dbf0930edd58088b0f5696f9bab2156e034c3d403b35ab2299ed06de39ad81a9              439 Packages.gz
+ e20c9efd07a022bc90dd8a6a844c4a57669009e49463b1c28440c9b0dd9efbed              176 Release
+SHA512:
+ 447976176db4ea39862eb685a518c0f450f9ef98ce10a3b9733c8d7533d04be53758dfa700e0349132b4dd60bc7836cb925741338f7c949e30f281c7579c3b58              615 Packages
+ 29fddaef3e9451f4f32bed7a32ec4b425d2aadcc93188567b629dad57e8410c5f473afea118c1bb8d17973708021b1efb328e3c154c7617d5bfc4ea7d9b273b0              439 Packages.gz
+ c394c83ee5a8aee740ffd99f92a901b3eaa9e99ff89262a64c7a813a7476050c2f0ef73b0d7aa2b4aa2aa8181d6cb69753f64fac4b5a2a4befba3a72bf162308              176 Release
