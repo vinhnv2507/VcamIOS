@@ -1,5 +1,8 @@
 name: Build tweak
 
+permissions:
+  contents: write
+
 on:
   workflow_dispatch:
   push:
@@ -23,3 +26,15 @@ jobs:
           name: vcam-deb
           path: packages/*.deb
           if-no-files-found: error
+
+      - name: Publish raw DEB in Releases
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          if gh release view latest-build >/dev/null 2>&1; then
+            gh release upload latest-build packages/*.deb --clobber
+          else
+            gh release create latest-build packages/*.deb \
+              --title "Latest VCam build" \
+              --notes "Automatic rootless build. Download the .deb file directly; do not install the artifact ZIP."
+          fi
