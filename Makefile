@@ -1,4 +1,4 @@
-ARCHS = arm64 arm64e
+ARCHS = arm64
 TARGET := iphone:clang:16.5:16.5
 
 # Sileo/Zebra reliably support gzip; Theos defaults to legacy raw LZMA.
@@ -7,7 +7,6 @@ THEOS_PLATFORM_DEB_COMPRESSION_TYPE = gzip
 _THEOS_PLATFORM_DPKG_DEB = dpkg-deb
 
 INSTALL_TARGET_PROCESSES = mediaserverd
-THEOS_PACKAGE_SCHEME=rootless
 
 include $(THEOS)/makefiles/common.mk
 

@@ -26,7 +26,12 @@ jobs:
           test -n "$deb"
           dpkg-deb --info "$deb"
           test "$(dpkg-deb --field "$deb" Package)" = "com.yourcompany.vcam"
-          test "$(dpkg-deb --field "$deb" Architecture)" = "iphoneos-arm64"
+          test "$(dpkg-deb --field "$deb" Architecture)" = "iphoneos-arm"
+          dpkg-deb --contents "$deb" | grep -q 'Library/MobileSubstrate/DynamicLibraries/vcam.dylib'
+          if dpkg-deb --contents "$deb" | grep -q 'var/jb'; then
+            echo "Rootless path found in rootful package" >&2
+            exit 1
+          fi
 
       - name: Upload package
         uses: actions/upload-artifact@v4
@@ -39,10 +44,10 @@ jobs:
         env:
           GH_TOKEN: ${{ github.token }}
         run: |
-          if gh release view sileo-compatible >/dev/null 2>&1; then
-            gh release upload sileo-compatible packages/*.deb --clobber
+          if gh release view neko-rootful >/dev/null 2>&1; then
+            gh release upload neko-rootful packages/*.deb --clobber
           else
-            gh release create sileo-compatible packages/*.deb \
-              --title "VCam – Sileo-compatible build" \
-              --notes "Rootless package built and validated with dpkg-deb. Download the .deb file directly."
+            gh release create neko-rootful packages/*.deb \
+              --title "VCam – NekoJB rootful" \
+              --notes "Rootful package for iOS 15 and NekoJB. Built and validated with dpkg-deb. Download the .deb file directly."
           fi

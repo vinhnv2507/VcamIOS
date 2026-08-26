@@ -1,9 +1,9 @@
 Package: com.yourcompany.vcam
 Name: vcam
-Version: 0.0.3
-Architecture: iphoneos-arm64
-Description: An awesome MobileSubstrate tweak!
-Maintainer: Ethan Arbuckle
-Author: Ethan Arbuckle
+Version: 0.0.4
+Architecture: iphoneos-arm
+Description: Virtual camera replacement for rootful jailbreaks.
+Maintainer: vinhnv2507
+Author: vinhnv2507
 Section: Tweaks
-Depends: mobilesubstrate (>= 0.9.5000)
+Depends: mobilesubstrate
