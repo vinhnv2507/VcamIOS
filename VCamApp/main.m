@@ -1,8 +1,9 @@
 #import <UIKit/UIKit.h>
 #import <CoreFoundation/CoreFoundation.h>
 
-static NSString *const VCamPreferencesPath = @"/var/mobile/Library/Preferences/com.yourcompany.vcam.plist";
-static NSString *const VCamMediaDirectory = @"/var/mobile/Media/VCam";
+static NSString *const VCamPreferencesPath = @"/tmp/com.yourcompany.vcam.plist";
+static NSString *const VCamStatusPath = @"/tmp/com.yourcompany.vcam.status.plist";
+static NSString *const VCamMediaDirectory = @"/tmp/VCam";
 static NSString *const VCamNotificationName = @"com.yourcompany.vcam.prefs.changed";
 static NSString *const VCamImageMediaType = @"public.image";
 static NSString *const VCamMovieMediaType = @"public.movie";
@@ -10,6 +11,7 @@ static NSString *const VCamMovieMediaType = @"public.movie";
 @interface VCamViewController : UIViewController <UIImagePickerControllerDelegate, UINavigationControllerDelegate>
 @property(nonatomic, strong) UISwitch *enabledSwitch;
 @property(nonatomic, strong) UILabel *statusLabel;
+@property(nonatomic, strong) UILabel *daemonStatusLabel;
 @property(nonatomic, strong) UIImageView *previewView;
 @end
 
@@ -62,6 +64,12 @@ static NSString *const VCamMovieMediaType = @"public.movie";
     self.statusLabel.numberOfLines = 2;
     self.statusLabel.textAlignment = NSTextAlignmentCenter;
 
+    self.daemonStatusLabel = [[UILabel alloc] init];
+    self.daemonStatusLabel.translatesAutoresizingMaskIntoConstraints = NO;
+    self.daemonStatusLabel.font = [UIFont boldSystemFontOfSize:14.0];
+    self.daemonStatusLabel.textAlignment = NSTextAlignmentCenter;
+    self.daemonStatusLabel.numberOfLines = 2;
+
     UIButton *imageButton = [self actionButtonWithTitle:@"Chọn ảnh" selector:@selector(selectImage)];
     UIButton *videoButton = [self actionButtonWithTitle:@"Chọn video" selector:@selector(selectVideo)];
 
@@ -76,6 +84,7 @@ static NSString *const VCamMovieMediaType = @"public.movie";
     [self.view addSubview:switchRow];
     [self.view addSubview:self.previewView];
     [self.view addSubview:self.statusLabel];
+    [self.view addSubview:self.daemonStatusLabel];
     [self.view addSubview:buttonStack];
 
     UILayoutGuide *safe = self.view.safeAreaLayoutGuide;
@@ -106,13 +115,22 @@ static NSString *const VCamMovieMediaType = @"public.movie";
         [self.statusLabel.leadingAnchor constraintEqualToAnchor:titleLabel.leadingAnchor],
         [self.statusLabel.trailingAnchor constraintEqualToAnchor:titleLabel.trailingAnchor],
 
-        [buttonStack.topAnchor constraintEqualToAnchor:self.statusLabel.bottomAnchor constant:16.0],
+        [self.daemonStatusLabel.topAnchor constraintEqualToAnchor:self.statusLabel.bottomAnchor constant:8.0],
+        [self.daemonStatusLabel.leadingAnchor constraintEqualToAnchor:titleLabel.leadingAnchor],
+        [self.daemonStatusLabel.trailingAnchor constraintEqualToAnchor:titleLabel.trailingAnchor],
+
+        [buttonStack.topAnchor constraintEqualToAnchor:self.daemonStatusLabel.bottomAnchor constant:14.0],
         [buttonStack.leadingAnchor constraintEqualToAnchor:titleLabel.leadingAnchor],
         [buttonStack.trailingAnchor constraintEqualToAnchor:titleLabel.trailingAnchor],
         [buttonStack.heightAnchor constraintEqualToConstant:50.0]
     ]];
 
     [self ensureMediaDirectory];
+    [self reloadState];
+}
+
+- (void)viewWillAppear:(BOOL)animated {
+    [super viewWillAppear:animated];
     [self reloadState];
 }
 
@@ -132,8 +150,10 @@ static NSString *const VCamMovieMediaType = @"public.movie";
     NSFileManager *manager = [NSFileManager defaultManager];
     [manager createDirectoryAtPath:VCamMediaDirectory
        withIntermediateDirectories:YES
-                        attributes:@{NSFilePosixPermissions: @0755}
+                        attributes:@{NSFilePosixPermissions: @0777}
                              error:nil];
+    [manager setAttributes:@{NSFilePosixPermissions: @0777}
+              ofItemAtPath:VCamMediaDirectory error:nil];
 }
 
 - (NSMutableDictionary *)preferences {
@@ -144,7 +164,7 @@ static NSString *const VCamMovieMediaType = @"public.movie";
 - (void)savePreferences:(NSMutableDictionary *)preferences {
     [preferences writeToFile:VCamPreferencesPath atomically:YES];
     [[NSFileManager defaultManager] setAttributes:@{
-        NSFilePosixPermissions: @0644,
+        NSFilePosixPermissions: @0666,
         NSFileProtectionKey: NSFileProtectionNone
     } ofItemAtPath:VCamPreferencesPath error:nil];
     CFNotificationCenterPostNotification(CFNotificationCenterGetDarwinNotifyCenter(),
@@ -161,18 +181,28 @@ static NSString *const VCamMovieMediaType = @"public.movie";
         self.statusLabel.text = @"Chưa chọn ảnh hoặc video";
         self.previewView.image = [UIImage systemImageNamed:@"camera.fill"];
         self.previewView.tintColor = [UIColor tertiaryLabelColor];
-        return;
+    } else {
+        NSString *ext = path.pathExtension.lowercaseString;
+        if ([@[@"jpg", @"jpeg", @"png"] containsObject:ext]) {
+            self.previewView.image = [UIImage imageWithContentsOfFile:path];
+            self.previewView.tintColor = nil;
+            self.statusLabel.text = [NSString stringWithFormat:@"Đang dùng ảnh: %@", path.lastPathComponent];
+        } else {
+            self.previewView.image = [UIImage systemImageNamed:@"video.fill"];
+            self.previewView.tintColor = [UIColor systemBlueColor];
+            self.statusLabel.text = [NSString stringWithFormat:@"Đang dùng video: %@", path.lastPathComponent];
+        }
     }
 
-    NSString *ext = path.pathExtension.lowercaseString;
-    if ([@[@"jpg", @"jpeg", @"png"] containsObject:ext]) {
-        self.previewView.image = [UIImage imageWithContentsOfFile:path];
-        self.previewView.tintColor = nil;
-        self.statusLabel.text = [NSString stringWithFormat:@"Đang dùng ảnh: %@", path.lastPathComponent];
+    NSDictionary *daemonStatus = [NSDictionary dictionaryWithContentsOfFile:VCamStatusPath];
+    if (daemonStatus) {
+        BOOL loaded = [daemonStatus[@"loaded"] boolValue];
+        NSString *message = daemonStatus[@"message"] ?: @"Unknown";
+        self.daemonStatusLabel.text = [NSString stringWithFormat:@"mediaserverd: %@", message];
+        self.daemonStatusLabel.textColor = loaded ? [UIColor systemGreenColor] : [UIColor systemOrangeColor];
     } else {
-        self.previewView.image = [UIImage systemImageNamed:@"video.fill"];
-        self.previewView.tintColor = [UIColor systemBlueColor];
-        self.statusLabel.text = [NSString stringWithFormat:@"Đang dùng video: %@", path.lastPathComponent];
+        self.daemonStatusLabel.text = @"mediaserverd: mở Camera rồi quay lại đây để kiểm tra";
+        self.daemonStatusLabel.textColor = [UIColor secondaryLabelColor];
     }
 }
 
@@ -230,7 +260,21 @@ didFinishPickingMediaWithInfo:(NSDictionary<UIImagePickerControllerInfoKey, id> 
         NSString *temporary = [destination stringByAppendingString:@".tmp"];
         NSFileManager *manager = [NSFileManager defaultManager];
         [manager removeItemAtPath:temporary error:nil];
-        if (![manager copyItemAtURL:sourceURL toURL:[NSURL fileURLWithPath:temporary] error:&error]) {
+        BOOL securityAccess = [sourceURL startAccessingSecurityScopedResource];
+        NSFileCoordinator *coordinator = [[NSFileCoordinator alloc] initWithFilePresenter:nil];
+        __block BOOL copied = NO;
+        __block NSError *copyError = nil;
+        [coordinator coordinateReadingItemAtURL:sourceURL
+                                        options:NSFileCoordinatorReadingWithoutChanges
+                                          error:&copyError
+                                     byAccessor:^(NSURL *coordinatedURL) {
+            copied = [manager copyItemAtURL:coordinatedURL
+                                      toURL:[NSURL fileURLWithPath:temporary]
+                                      error:&copyError];
+        }];
+        if (securityAccess) [sourceURL stopAccessingSecurityScopedResource];
+        if (!copied) {
+            error = copyError;
             destination = nil;
         } else {
             [manager removeItemAtPath:destination error:nil];
@@ -240,13 +284,14 @@ didFinishPickingMediaWithInfo:(NSDictionary<UIImagePickerControllerInfoKey, id> 
 
     if (destination) {
         [[NSFileManager defaultManager] setAttributes:@{
-            NSFilePosixPermissions: @0644,
+            NSFilePosixPermissions: @0666,
             NSFileProtectionKey: NSFileProtectionNone
         } ofItemAtPath:destination error:nil];
         [self removeOldMediaExcept:destination];
         NSMutableDictionary *preferences = [self preferences];
         preferences[@"enabled"] = @YES;
         preferences[@"mediaPath"] = destination;
+        [[NSFileManager defaultManager] removeItemAtPath:VCamStatusPath error:nil];
         [self savePreferences:preferences];
         self.enabledSwitch.on = YES;
     }

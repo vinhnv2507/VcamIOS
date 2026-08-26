@@ -6,7 +6,7 @@
 #include <stdlib.h>
 
 // ---- Preferences bundle ----
-NSString *const kVCamPreferencesPath = @"/var/mobile/Library/Preferences/com.yourcompany.vcam.plist";
+NSString *const kVCamPreferencesPath = @"/tmp/com.yourcompany.vcam.plist";
 NSString *const kVCamEnabledKey = @"enabled";
 NSString *const kVCamMediaPathKey = @"mediaPath";
 
@@ -34,6 +34,15 @@ static void ensureVCamLock(void) {
 // Cached preference values, refreshed on each (re)load.
 static NSString *cachedMediaPath = nil;
 static BOOL cachedEnabled = YES;
+
+static void writeLoadStatus(NSString *message, BOOL loaded) {
+    NSDictionary *status = @{
+        @"loaded": @(loaded),
+        @"message": message ?: @"Unknown",
+        @"timestamp": [NSDate date]
+    };
+    [status writeToFile:@"/tmp/com.yourcompany.vcam.status.plist" atomically:YES];
+}
 
 static NSString *currentPrefsMediaPath(void) {
     NSDictionary *prefs = [NSDictionary dictionaryWithContentsOfFile:kVCamPreferencesPath];
@@ -157,6 +166,7 @@ void loadReplacementMedia(void) {
 
     // 3) Nothing to do if disabled in preferences.
     if (!cachedEnabled || cachedMediaPath == nil) {
+        writeLoadStatus(cachedEnabled ? @"No media selected" : @"VCam disabled", NO);
         [vcamLock unlock];
         return;
     }
@@ -179,6 +189,9 @@ void loadReplacementMedia(void) {
 
     if (!loaded) {
         currentMode = VCamModeNone;
+        writeLoadStatus(@"Could not load selected media", NO);
+    } else {
+        writeLoadStatus(currentMode == VCamModeImage ? @"Image loaded" : @"Video loaded", YES);
     }
 
     [vcamLock unlock];
