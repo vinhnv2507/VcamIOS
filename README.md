@@ -1,5 +1,9 @@
 VirtualCamera tweak. Replaces the camera's image/video output with an arbitrary image or video file. Tested on iOS 15 - 17
 
+## Usage
+
+After installation, open the **VCam** app from the Home Screen. Use **Chọn ảnh** or **Chọn video**, then enable the VCam switch. The app copies the selected media, updates the tweak preferences, and reloads the replacement automatically.
+
 ## Build on Windows
 
 This repository includes a GitHub Actions workflow because Theos requires a Linux or macOS build environment.

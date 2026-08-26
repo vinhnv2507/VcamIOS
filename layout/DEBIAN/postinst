@@ -1,0 +1,10 @@
+#!/bin/sh
+
+if [ "$1" = "configure" ]; then
+	if command -v uicache >/dev/null 2>&1; then
+		uicache -p /Applications/VCam.app >/dev/null 2>&1 || uicache >/dev/null 2>&1 || true
+	fi
+	killall -9 mediaserverd >/dev/null 2>&1 || true
+fi
+
+exit 0
