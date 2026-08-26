@@ -77,6 +77,6 @@ jobs:
         uses: peaceiris/actions-gh-pages@v4
         with:
           github_token: ${{ github.token }}
-          publish_branch: apt
+          publish_branch: gh-pages
           publish_dir: ./apt-repo
           force_orphan: true
