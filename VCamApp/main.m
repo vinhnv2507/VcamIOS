@@ -1,5 +1,7 @@
 #import <UIKit/UIKit.h>
 #import <CoreFoundation/CoreFoundation.h>
+#import <Photos/Photos.h>
+#import <AVFoundation/AVFoundation.h>
 
 static NSString *const VCamPreferencesPath = @"/tmp/com.yourcompany.vcam.plist";
 static NSString *const VCamStatusPath = @"/tmp/com.yourcompany.vcam.status.plist";
@@ -13,6 +15,8 @@ static NSString *const VCamMovieMediaType = @"public.movie";
 @property(nonatomic, strong) UILabel *statusLabel;
 @property(nonatomic, strong) UILabel *daemonStatusLabel;
 @property(nonatomic, strong) UIImageView *previewView;
+- (void)applySelectedMediaAtPath:(NSString *)path;
+- (void)exportVideoAsset:(AVAsset *)asset;
 @end
 
 @implementation VCamViewController
@@ -241,69 +245,139 @@ static NSString *const VCamMovieMediaType = @"public.movie";
 - (void)imagePickerController:(UIImagePickerController *)picker
 didFinishPickingMediaWithInfo:(NSDictionary<UIImagePickerControllerInfoKey, id> *)info {
     NSString *mediaType = info[UIImagePickerControllerMediaType];
-    NSError *error = nil;
-    NSString *destination = nil;
 
     if ([mediaType isEqualToString:VCamImageMediaType]) {
+        NSError *error = nil;
         UIImage *image = info[UIImagePickerControllerOriginalImage];
         NSData *data = UIImageJPEGRepresentation(image, 0.92);
-        destination = [VCamMediaDirectory stringByAppendingPathComponent:@"replacement.jpg"];
+        NSString *destination = [VCamMediaDirectory stringByAppendingPathComponent:@"replacement.jpg"];
         if (!data || ![data writeToFile:destination options:NSDataWritingAtomic error:&error]) {
             destination = nil;
         }
-    } else if ([mediaType isEqualToString:VCamMovieMediaType]) {
-        NSURL *sourceURL = info[UIImagePickerControllerMediaURL];
-        NSString *extension = sourceURL.pathExtension.lowercaseString;
-        if (![@[@"mp4", @"mov", @"m4v"] containsObject:extension]) extension = @"mov";
-        destination = [VCamMediaDirectory stringByAppendingPathComponent:
-            [NSString stringWithFormat:@"replacement.%@", extension]];
-        NSString *temporary = [destination stringByAppendingString:@".tmp"];
-        NSFileManager *manager = [NSFileManager defaultManager];
-        [manager removeItemAtPath:temporary error:nil];
-        BOOL securityAccess = [sourceURL startAccessingSecurityScopedResource];
-        NSFileCoordinator *coordinator = [[NSFileCoordinator alloc] initWithFilePresenter:nil];
-        __block BOOL copied = NO;
-        __block NSError *copyError = nil;
-        [coordinator coordinateReadingItemAtURL:sourceURL
-                                        options:NSFileCoordinatorReadingWithoutChanges
-                                          error:&copyError
-                                     byAccessor:^(NSURL *coordinatedURL) {
-            copied = [manager copyItemAtURL:coordinatedURL
-                                      toURL:[NSURL fileURLWithPath:temporary]
-                                      error:&copyError];
+        [picker dismissViewControllerAnimated:YES completion:^{
+            if (destination) {
+                [self applySelectedMediaAtPath:destination];
+            } else {
+                [self showMessage:error.localizedDescription ?: @"Không thể nhập ảnh đã chọn."];
+            }
         }];
-        if (securityAccess) [sourceURL stopAccessingSecurityScopedResource];
-        if (!copied) {
-            error = copyError;
-            destination = nil;
-        } else {
-            [manager removeItemAtPath:destination error:nil];
-            if (![manager moveItemAtPath:temporary toPath:destination error:&error]) destination = nil;
-        }
+        return;
     }
 
-    if (destination) {
-        [[NSFileManager defaultManager] setAttributes:@{
-            NSFilePosixPermissions: @0666,
-            NSFileProtectionKey: NSFileProtectionNone
-        } ofItemAtPath:destination error:nil];
-        [self removeOldMediaExcept:destination];
-        NSMutableDictionary *preferences = [self preferences];
-        preferences[@"enabled"] = @YES;
-        preferences[@"mediaPath"] = destination;
-        [[NSFileManager defaultManager] removeItemAtPath:VCamStatusPath error:nil];
-        [self savePreferences:preferences];
-        self.enabledSwitch.on = YES;
+    if ([mediaType isEqualToString:VCamMovieMediaType]) {
+        PHAsset *photoAsset = info[UIImagePickerControllerPHAsset];
+        NSURL *fallbackURL = info[UIImagePickerControllerMediaURL];
+        [picker dismissViewControllerAnimated:YES completion:^{
+            self.statusLabel.text = @"Đang nhập video…";
+            if (photoAsset) {
+                PHVideoRequestOptions *options = [[PHVideoRequestOptions alloc] init];
+                options.networkAccessAllowed = YES;
+                options.deliveryMode = PHVideoRequestOptionsDeliveryModeHighQualityFormat;
+                [[PHImageManager defaultManager] requestAVAssetForVideo:photoAsset
+                    options:options
+                    resultHandler:^(AVAsset *asset, AVAudioMix *audioMix, NSDictionary *resultInfo) {
+                        if (asset) {
+                            [self exportVideoAsset:asset];
+                        } else {
+                            dispatch_async(dispatch_get_main_queue(), ^{
+                                [self showMessage:@"Photos không cấp dữ liệu video đã chọn."];
+                                [self reloadState];
+                            });
+                        }
+                    }];
+            } else if (fallbackURL) {
+                [self exportVideoAsset:[AVURLAsset assetWithURL:fallbackURL]];
+            } else {
+                [self showMessage:@"Không tìm thấy dữ liệu video đã chọn."];
+                [self reloadState];
+            }
+        }];
+        return;
     }
 
     [picker dismissViewControllerAnimated:YES completion:^{
-        if (destination) {
+        [self showMessage:@"Định dạng media không được hỗ trợ."];
+    }];
+}
+
+- (void)exportVideoAsset:(AVAsset *)asset {
+    NSArray<NSString *> *presets = [AVAssetExportSession exportPresetsCompatibleWithAsset:asset];
+    NSString *preset = [presets containsObject:AVAssetExportPresetPassthrough]
+        ? AVAssetExportPresetPassthrough : AVAssetExportPresetHighestQuality;
+    AVAssetExportSession *exporter = [[AVAssetExportSession alloc] initWithAsset:asset presetName:preset];
+    if (!exporter) {
+        dispatch_async(dispatch_get_main_queue(), ^{
+            [self showMessage:@"Không thể tạo phiên nhập video."];
             [self reloadState];
-            [self showMessage:@"Đã áp dụng. Hãy mở ứng dụng Camera để kiểm tra."];
+        });
+        return;
+    }
+
+    NSString *fileType = nil;
+    NSString *extension = nil;
+    if ([exporter.supportedFileTypes containsObject:AVFileTypeMPEG4]) {
+        fileType = AVFileTypeMPEG4;
+        extension = @"mp4";
+    } else if ([exporter.supportedFileTypes containsObject:AVFileTypeQuickTimeMovie]) {
+        fileType = AVFileTypeQuickTimeMovie;
+        extension = @"mov";
+    }
+    if (!fileType) {
+        dispatch_async(dispatch_get_main_queue(), ^{
+            [self showMessage:@"Video này không có định dạng xuất tương thích."];
+            [self reloadState];
+        });
+        return;
+    }
+
+    NSString *temporary = [VCamMediaDirectory stringByAppendingPathComponent:
+        [NSString stringWithFormat:@"exporting.%@", extension]];
+    NSString *destination = [VCamMediaDirectory stringByAppendingPathComponent:
+        [NSString stringWithFormat:@"replacement.%@", extension]];
+    [[NSFileManager defaultManager] removeItemAtPath:temporary error:nil];
+    exporter.outputURL = [NSURL fileURLWithPath:temporary];
+    exporter.outputFileType = fileType;
+    exporter.shouldOptimizeForNetworkUse = YES;
+
+    [exporter exportAsynchronouslyWithCompletionHandler:^{
+        if (exporter.status == AVAssetExportSessionStatusCompleted) {
+            NSError *moveError = nil;
+            NSFileManager *manager = [NSFileManager defaultManager];
+            [manager removeItemAtPath:destination error:nil];
+            BOOL moved = [manager moveItemAtPath:temporary toPath:destination error:&moveError];
+            dispatch_async(dispatch_get_main_queue(), ^{
+                if (moved) {
+                    [self applySelectedMediaAtPath:destination];
+                } else {
+                    [self showMessage:moveError.localizedDescription ?: @"Không thể lưu video đã nhập."];
+                    [self reloadState];
+                }
+            });
         } else {
-            [self showMessage:error.localizedDescription ?: @"Không thể nhập file đã chọn."];
+            NSError *exportError = exporter.error;
+            [[NSFileManager defaultManager] removeItemAtPath:temporary error:nil];
+            dispatch_async(dispatch_get_main_queue(), ^{
+                [self showMessage:exportError.localizedDescription ?: @"Không thể xuất video đã chọn."];
+                [self reloadState];
+            });
         }
     }];
+}
+
+- (void)applySelectedMediaAtPath:(NSString *)destination {
+    [[NSFileManager defaultManager] setAttributes:@{
+        NSFilePosixPermissions: @0666,
+        NSFileProtectionKey: NSFileProtectionNone
+    } ofItemAtPath:destination error:nil];
+    [self removeOldMediaExcept:destination];
+    NSMutableDictionary *preferences = [self preferences];
+    preferences[@"enabled"] = @YES;
+    preferences[@"mediaPath"] = destination;
+    [[NSFileManager defaultManager] removeItemAtPath:VCamStatusPath error:nil];
+    [self savePreferences:preferences];
+    self.enabledSwitch.on = YES;
+    [self reloadState];
+    [self showMessage:@"Đã áp dụng. Hãy mở ứng dụng Camera để kiểm tra."];
 }
 
 - (void)removeOldMediaExcept:(NSString *)keptPath {

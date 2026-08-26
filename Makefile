@@ -22,7 +22,7 @@ APPLICATION_NAME = VCam
 
 VCam_FILES = VCamApp/main.m
 VCam_CFLAGS = -fobjc-arc -Wno-deprecated-declarations
-VCam_FRAMEWORKS = UIKit Foundation
+VCam_FRAMEWORKS = UIKit Foundation Photos AVFoundation
 VCam_RESOURCE_DIRS = VCamApp/Resources
 VCam_CODESIGN_FLAGS = -SVCamApp/VCam.entitlements
 

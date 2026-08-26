@@ -86,6 +86,7 @@ static BOOL loadImageMedia(NSString *path) {
     // Downsample for large images to bound memory usage (target <= ~4K).
     CGImageRef image = CGImageSourceCreateThumbnailAtIndex(source, 0, (__bridge CFDictionaryRef)@{
         (id)kCGImageSourceCreateThumbnailFromImageAlways : @YES,
+        (id)kCGImageSourceCreateThumbnailWithTransform : @YES,
         (id)kCGImageSourceShouldCacheImmediately : @YES,
         (id)kCGImageSourceThumbnailMaxPixelSize : @(3840)
     });
@@ -232,18 +233,31 @@ BOOL drawReplacementOntoBuffer(CVPixelBufferRef targetBuffer) {
     CGRect extent = replacementCIImage.extent;
     if (extent.size.width <= 0 || extent.size.height <= 0) { [vcamLock unlock]; return NO; }
 
-    // Aspect-fit (letterbox).
-    CGFloat scale = MIN(targetWidth / extent.size.width, targetHeight / extent.size.height);
+    // Normalize EXIF/transformed origins, then aspect-fill the entire camera frame.
+    CIImage *normalized = [replacementCIImage imageByApplyingTransform:
+        CGAffineTransformMakeTranslation(-extent.origin.x, -extent.origin.y)];
+    CGRect normalizedExtent = normalized.extent;
+    CGFloat scale = MAX(targetWidth / normalizedExtent.size.width,
+                        targetHeight / normalizedExtent.size.height);
     CGAffineTransform scaleXform = CGAffineTransformMakeScale(scale, scale);
-    CIImage *scaled = [replacementCIImage imageByApplyingTransform:scaleXform];
+    CIImage *scaled = [normalized imageByApplyingTransform:scaleXform];
     CGRect scaledExtent = scaled.extent;
 
     CGFloat offX = (targetWidth  - scaledExtent.size.width)  / 2.0;
     CGFloat offY = (targetHeight - scaledExtent.size.height) / 2.0;
     CGAffineTransform translate = CGAffineTransformMakeTranslation(offX, offY);
-    CIImage *final = [scaled imageByApplyingTransform:translate];
+    CGRect targetRect = CGRectMake(0, 0, targetWidth, targetHeight);
+    CIImage *filled = [[scaled imageByApplyingTransform:translate] imageByCroppingToRect:targetRect];
+    CIImage *background = [[CIImage imageWithColor:
+        [CIColor colorWithRed:0 green:0 blue:0 alpha:1]] imageByCroppingToRect:targetRect];
+    CIImage *final = [filled imageByCompositingOverImage:background];
 
-    [sharedCIContext render:final toCVPixelBuffer:targetBuffer];
+    CGColorSpaceRef colorSpace = CGColorSpaceCreateDeviceRGB();
+    [sharedCIContext render:final
+            toCVPixelBuffer:targetBuffer
+                     bounds:targetRect
+                 colorSpace:colorSpace];
+    CGColorSpaceRelease(colorSpace);
 
     [vcamLock unlock];
     return YES;
