@@ -6,6 +6,8 @@ permissions:
 on:
   workflow_dispatch:
   push:
+    branches:
+      - main
 
 jobs:
   package:
@@ -50,4 +52,31 @@ jobs:
             gh release create neko-rootful packages/*.deb \
               --title "VCam – NekoJB rootful" \
               --notes "Rootful package for iOS 15 and NekoJB. Built and validated with dpkg-deb. Download the .deb file directly."
+
+      - name: Create flat APT repository
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y apt-utils dpkg-dev
+          mkdir -p apt-repo
+          cp packages/*.deb apt-repo/
+          cd apt-repo
+          apt-ftparchive packages . > Packages
+          gzip -9c Packages > Packages.gz
+          {
+            echo "Origin: VCam"
+            echo "Label: VCam for NekoJB"
+            echo "Suite: stable"
+            echo "Codename: neko-rootful"
+            echo "Architectures: iphoneos-arm"
+            echo "Description: VCam rootful repository"
+            apt-ftparchive release .
+          } > Release
+
+      - name: Publish APT repository branch
+        uses: peaceiris/actions-gh-pages@v4
+        with:
+          github_token: ${{ github.token }}
+          publish_branch: apt
+          publish_dir: ./apt-repo
+          force_orphan: true
           fi
