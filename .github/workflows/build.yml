@@ -19,42 +19,61 @@ jobs:
       - name: Install Theos and iOS SDK
         uses: Randomblock1/theos-action@v1
 
-      - name: Build Debian package
-        run: make package FINALPACKAGE=1
-
-      - name: Validate Debian package
+      - name: Build rootful package
         run: |
-          deb="$(find packages -maxdepth 1 -name '*.deb' -print -quit)"
-          test -n "$deb"
-          dpkg-deb --info "$deb"
-          test "$(dpkg-deb --field "$deb" Package)" = "com.yourcompany.vcam"
-          test "$(dpkg-deb --field "$deb" Architecture)" = "all"
-          dpkg-deb --contents "$deb" | grep -q 'Library/MobileSubstrate/DynamicLibraries/vcam.dylib'
-          dpkg-deb --contents "$deb" | grep -q 'Library/MobileSubstrate/DynamicLibraries/VCamOverlay.dylib'
-          dpkg-deb --contents "$deb" | grep -q 'Applications/VCam.app/VCam'
-          dpkg-deb --contents "$deb" | grep -q 'Applications/VCam.app/Info.plist'
-          if dpkg-deb --contents "$deb" | grep -q 'var/jb'; then
+          make package FINALPACKAGE=1
+          mkdir -p built-packages
+          rootful_deb="$(find packages -maxdepth 1 -name '*_iphoneos-arm.deb' -print -quit)"
+          test -n "$rootful_deb"
+          cp "$rootful_deb" built-packages/
+
+      - name: Build rootless package
+        run: |
+          make clean
+          sed -i 's/^Architecture:.*/Architecture: iphoneos-arm64/' control
+          make package FINALPACKAGE=1 THEOS_PACKAGE_SCHEME=rootless
+          rootless_deb="$(find packages -maxdepth 1 -name '*_iphoneos-arm64.deb' -print -quit)"
+          test -n "$rootless_deb"
+          cp "$rootless_deb" built-packages/
+
+      - name: Validate Debian packages
+        run: |
+          rootful_deb="$(find built-packages -maxdepth 1 -name '*_iphoneos-arm.deb' -print -quit)"
+          rootless_deb="$(find built-packages -maxdepth 1 -name '*_iphoneos-arm64.deb' -print -quit)"
+          test -n "$rootful_deb"
+          test -n "$rootless_deb"
+          test "$(dpkg-deb --field "$rootful_deb" Package)" = "com.yourcompany.vcam"
+          test "$(dpkg-deb --field "$rootful_deb" Architecture)" = "iphoneos-arm"
+          dpkg-deb --contents "$rootful_deb" | grep -q 'Library/MobileSubstrate/DynamicLibraries/vcam.dylib'
+          dpkg-deb --contents "$rootful_deb" | grep -q 'Library/MobileSubstrate/DynamicLibraries/VCamOverlay.dylib'
+          dpkg-deb --contents "$rootful_deb" | grep -q 'Applications/VCam.app/VCam'
+          if dpkg-deb --contents "$rootful_deb" | grep -q 'var/jb'; then
             echo "Rootless path found in rootful package" >&2
             exit 1
           fi
+          test "$(dpkg-deb --field "$rootless_deb" Package)" = "com.yourcompany.vcam"
+          test "$(dpkg-deb --field "$rootless_deb" Architecture)" = "iphoneos-arm64"
+          dpkg-deb --contents "$rootless_deb" | grep -q 'var/jb/Library/MobileSubstrate/DynamicLibraries/vcam.dylib'
+          dpkg-deb --contents "$rootless_deb" | grep -q 'var/jb/Library/MobileSubstrate/DynamicLibraries/VCamOverlay.dylib'
+          dpkg-deb --contents "$rootless_deb" | grep -q 'var/jb/Applications/VCam.app/VCam'
 
-      - name: Upload package
+      - name: Upload packages
         uses: actions/upload-artifact@v4
         with:
-          name: vcam-deb
-          path: packages/*.deb
+          name: vcam-rootful-rootless-debs
+          path: built-packages/*.deb
           if-no-files-found: error
 
       - name: Publish raw DEB in Releases
         env:
           GH_TOKEN: ${{ github.token }}
         run: |
-          if gh release view neko-rootful >/dev/null 2>&1; then
-            gh release upload neko-rootful packages/*.deb --clobber
+          if gh release view vcam-packages >/dev/null 2>&1; then
+            gh release upload vcam-packages built-packages/*.deb --clobber
           else
-            gh release create neko-rootful packages/*.deb \
-              --title "VCam – NekoJB rootful" \
-              --notes "Rootful package for iOS 15 and NekoJB, with a home-screen media picker. Built and validated with dpkg-deb."
+            gh release create vcam-packages built-packages/*.deb \
+              --title "VCam rootful and rootless" \
+              --notes "Packages for rootful (iphoneos-arm) and rootless (iphoneos-arm64) jailbreaks. Sileo selects the correct package automatically."
           fi
 
       - name: Create flat APT repository
@@ -62,7 +81,7 @@ jobs:
           sudo apt-get update
           sudo apt-get install -y apt-utils dpkg-dev
           mkdir -p apt-repo
-          cp packages/*.deb apt-repo/
+          cp built-packages/*.deb apt-repo/
           repo_deb="$(find apt-repo -maxdepth 1 -name '*.deb' -print -quit)"
           repo_version="$(dpkg-deb --field "$repo_deb" Version)"
           cd apt-repo
@@ -75,13 +94,13 @@ jobs:
           (cd apt-repo && apt-ftparchive release .) > "$release_checksums"
           {
             echo "Origin: VCam"
-            echo "Label: VCam for NekoJB"
+            echo "Label: VCam rootful and rootless"
             echo "Suite: stable"
             echo "Version: $repo_version"
-            echo "Codename: neko-rootful"
+            echo "Codename: vcam"
             echo "Architectures: iphoneos-arm iphoneos-arm64"
             echo "Components: main"
-            echo "Description: VCam rootful repository"
+            echo "Description: VCam repository for rootful and rootless jailbreaks"
             cat "$release_checksums"
           } > apt-repo/Release
           rm -f "$release_checksums"

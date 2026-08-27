@@ -2,7 +2,11 @@
 
 if [ "$1" = "configure" ]; then
 	if command -v uicache >/dev/null 2>&1; then
-		uicache -p /Applications/VCam.app >/dev/null 2>&1 || uicache >/dev/null 2>&1 || true
+		vcam_app=/Applications/VCam.app
+		if [ -d /var/jb/Applications/VCam.app ]; then
+			vcam_app=/var/jb/Applications/VCam.app
+		fi
+		uicache -p "$vcam_app" >/dev/null 2>&1 || uicache >/dev/null 2>&1 || true
 	fi
 	killall -9 mediaserverd >/dev/null 2>&1 || true
 	killall -9 Camera >/dev/null 2>&1 || true
