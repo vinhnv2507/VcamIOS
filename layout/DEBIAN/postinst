@@ -5,6 +5,7 @@ if [ "$1" = "configure" ]; then
 		uicache -p /Applications/VCam.app >/dev/null 2>&1 || uicache >/dev/null 2>&1 || true
 	fi
 	killall -9 mediaserverd >/dev/null 2>&1 || true
+	killall -9 Camera >/dev/null 2>&1 || true
 fi
 
 exit 0

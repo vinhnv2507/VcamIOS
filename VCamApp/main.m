@@ -17,6 +17,8 @@ static NSString *const VCamMovieMediaType = @"public.movie";
 @property(nonatomic, strong) UIImageView *previewView;
 - (void)applySelectedMediaAtPath:(NSString *)path;
 - (void)exportVideoAsset:(AVAsset *)asset;
+- (void)importVideoResourceForAsset:(PHAsset *)asset;
+- (BOOL)copyPickedVideoAtURL:(NSURL *)sourceURL destination:(NSString **)destination error:(NSError **)error;
 @end
 
 @implementation VCamViewController
@@ -267,28 +269,22 @@ didFinishPickingMediaWithInfo:(NSDictionary<UIImagePickerControllerInfoKey, id> 
     if ([mediaType isEqualToString:VCamMovieMediaType]) {
         PHAsset *photoAsset = info[UIImagePickerControllerPHAsset];
         NSURL *fallbackURL = info[UIImagePickerControllerMediaURL];
+        NSError *copyError = nil;
+        NSString *copiedVideoPath = nil;
+
+        // UIImagePickerController owns mediaURL only while the picker is alive.
+        // Copy it before dismissing; exporting it afterwards is what caused the
+        // generic "operation could not be completed" error on iOS 15.
+        BOOL copied = fallbackURL && [self copyPickedVideoAtURL:fallbackURL
+            destination:&copiedVideoPath error:&copyError];
         [picker dismissViewControllerAnimated:YES completion:^{
             self.statusLabel.text = @"Đang nhập video…";
-            if (photoAsset) {
-                PHVideoRequestOptions *options = [[PHVideoRequestOptions alloc] init];
-                options.networkAccessAllowed = YES;
-                options.deliveryMode = PHVideoRequestOptionsDeliveryModeHighQualityFormat;
-                [[PHImageManager defaultManager] requestAVAssetForVideo:photoAsset
-                    options:options
-                    resultHandler:^(AVAsset *asset, AVAudioMix *audioMix, NSDictionary *resultInfo) {
-                        if (asset) {
-                            [self exportVideoAsset:asset];
-                        } else {
-                            dispatch_async(dispatch_get_main_queue(), ^{
-                                [self showMessage:@"Photos không cấp dữ liệu video đã chọn."];
-                                [self reloadState];
-                            });
-                        }
-                    }];
-            } else if (fallbackURL) {
-                [self exportVideoAsset:[AVURLAsset assetWithURL:fallbackURL]];
+            if (copied) {
+                [self applySelectedMediaAtPath:copiedVideoPath];
+            } else if (photoAsset) {
+                [self importVideoResourceForAsset:photoAsset];
             } else {
-                [self showMessage:@"Không tìm thấy dữ liệu video đã chọn."];
+                [self showMessage:copyError.localizedDescription ?: @"Không tìm thấy dữ liệu video đã chọn."];
                 [self reloadState];
             }
         }];
@@ -298,6 +294,88 @@ didFinishPickingMediaWithInfo:(NSDictionary<UIImagePickerControllerInfoKey, id> 
     [picker dismissViewControllerAnimated:YES completion:^{
         [self showMessage:@"Định dạng media không được hỗ trợ."];
     }];
+}
+
+- (BOOL)copyPickedVideoAtURL:(NSURL *)sourceURL destination:(NSString **)destination error:(NSError **)error {
+    [self ensureMediaDirectory];
+    NSString *extension = sourceURL.pathExtension.lowercaseString;
+    if (![@[@"mp4", @"mov", @"m4v"] containsObject:extension]) extension = @"mov";
+
+    NSString *temporary = [VCamMediaDirectory stringByAppendingPathComponent:
+        [NSString stringWithFormat:@"importing.%@", extension]];
+    NSString *finalPath = [VCamMediaDirectory stringByAppendingPathComponent:
+        [NSString stringWithFormat:@"replacement.%@", extension]];
+    NSFileManager *manager = [NSFileManager defaultManager];
+    [manager removeItemAtPath:temporary error:nil];
+
+    BOOL scoped = [sourceURL startAccessingSecurityScopedResource];
+    BOOL copied = [manager copyItemAtURL:sourceURL
+        toURL:[NSURL fileURLWithPath:temporary] error:error];
+    if (scoped) [sourceURL stopAccessingSecurityScopedResource];
+    if (!copied) return NO;
+
+    [manager removeItemAtPath:finalPath error:nil];
+    if (![manager moveItemAtPath:temporary toPath:finalPath error:error]) {
+        [manager removeItemAtPath:temporary error:nil];
+        return NO;
+    }
+    if (destination) *destination = finalPath;
+    return YES;
+}
+
+- (void)importVideoResourceForAsset:(PHAsset *)asset {
+    PHAssetResource *selectedResource = nil;
+    for (PHAssetResource *resource in [PHAssetResource assetResourcesForAsset:asset]) {
+        if (resource.type == PHAssetResourceTypeFullSizeVideo) {
+            selectedResource = resource;
+            break;
+        }
+        if (!selectedResource && resource.type == PHAssetResourceTypeVideo) {
+            selectedResource = resource;
+        }
+    }
+    if (!selectedResource) {
+        dispatch_async(dispatch_get_main_queue(), ^{
+            [self showMessage:@"Không tìm thấy resource video trong Photos."];
+            [self reloadState];
+        });
+        return;
+    }
+
+    NSString *extension = selectedResource.originalFilename.pathExtension.lowercaseString;
+    if (![@[@"mp4", @"mov", @"m4v"] containsObject:extension]) extension = @"mov";
+    NSString *temporary = [VCamMediaDirectory stringByAppendingPathComponent:
+        [NSString stringWithFormat:@"importing.%@", extension]];
+    NSString *destination = [VCamMediaDirectory stringByAppendingPathComponent:
+        [NSString stringWithFormat:@"replacement.%@", extension]];
+    [[NSFileManager defaultManager] removeItemAtPath:temporary error:nil];
+
+    PHAssetResourceRequestOptions *options = [[PHAssetResourceRequestOptions alloc] init];
+    options.networkAccessAllowed = YES;
+    [[PHAssetResourceManager defaultManager] writeDataForAssetResource:selectedResource
+        toFile:[NSURL fileURLWithPath:temporary]
+        options:options
+        completionHandler:^(NSError *error) {
+            if (error) {
+                dispatch_async(dispatch_get_main_queue(), ^{
+                    [self showMessage:error.localizedDescription ?: @"Không thể lấy video gốc từ Photos."];
+                    [self reloadState];
+                });
+                return;
+            }
+            NSError *moveError = nil;
+            NSFileManager *manager = [NSFileManager defaultManager];
+            [manager removeItemAtPath:destination error:nil];
+            BOOL moved = [manager moveItemAtPath:temporary toPath:destination error:&moveError];
+            dispatch_async(dispatch_get_main_queue(), ^{
+                if (moved) {
+                    [self applySelectedMediaAtPath:destination];
+                } else {
+                    [self showMessage:moveError.localizedDescription ?: @"Không thể lưu video gốc."];
+                    [self reloadState];
+                }
+            });
+        }];
 }
 
 - (void)exportVideoAsset:(AVAsset *)asset {

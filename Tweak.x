@@ -20,6 +20,11 @@ static void vcamPrefsChanged(CFNotificationCenterRef center, void *observer,
     vcam_needsLoad = YES;
 }
 
+static void vcamAdjustmentsChanged(CFNotificationCenterRef center, void *observer,
+                                   CFStringRef name, const void *object, CFDictionaryRef userInfo) {
+    reloadReplacementAdjustments();
+}
+
 %hook BWNodeOutput
 
 - (void)emitSampleBuffer:(CMSampleBufferRef)sampleBuffer {
@@ -52,6 +57,13 @@ static void vcamPrefsChanged(CFNotificationCenterRef center, void *observer,
         NULL,
         vcamPrefsChanged,
         (__bridge CFStringRef)@"com.yourcompany.vcam.prefs.changed",
+        NULL,
+        CFNotificationSuspensionBehaviorDeliverImmediately);
+    CFNotificationCenterAddObserver(
+        CFNotificationCenterGetDarwinNotifyCenter(),
+        NULL,
+        vcamAdjustmentsChanged,
+        (__bridge CFStringRef)@"com.yourcompany.vcam.adjustments.changed",
         NULL,
         CFNotificationSuspensionBehaviorDeliverImmediately);
 }

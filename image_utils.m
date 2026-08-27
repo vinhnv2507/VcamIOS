@@ -4,11 +4,16 @@
 #import <CoreImage/CoreImage.h>
 #import <ImageIO/ImageIO.h>
 #include <stdlib.h>
+#include <math.h>
 
 // ---- Preferences bundle ----
 NSString *const kVCamPreferencesPath = @"/tmp/com.yourcompany.vcam.plist";
 NSString *const kVCamEnabledKey = @"enabled";
 NSString *const kVCamMediaPathKey = @"mediaPath";
+NSString *const kVCamOffsetXKey = @"offsetX";
+NSString *const kVCamOffsetYKey = @"offsetY";
+NSString *const kVCamZoomKey = @"zoom";
+NSString *const kVCamBrightnessKey = @"brightness";
 
 typedef NS_ENUM(NSInteger, VCamMode) {
     VCamModeNone = 0,
@@ -22,6 +27,7 @@ static CGImageRef replacementImage = NULL;
 static CVPixelBufferRef *videoFrames = NULL;
 static size_t videoFrameCount = 0;
 static size_t currentFrameIndex = 0;
+static CGAffineTransform videoPreferredTransform;
 static CIContext *sharedCIContext = NULL;
 static NSLock *vcamLock = NULL;
 
@@ -34,6 +40,19 @@ static void ensureVCamLock(void) {
 // Cached preference values, refreshed on each (re)load.
 static NSString *cachedMediaPath = nil;
 static BOOL cachedEnabled = YES;
+static CGFloat cachedOffsetX = 0.0;
+static CGFloat cachedOffsetY = 0.0;
+static CGFloat cachedZoom = 1.0;
+static CGFloat cachedBrightness = 0.0;
+
+static void readAdjustmentPreferences(void) {
+    NSDictionary *prefs = [NSDictionary dictionaryWithContentsOfFile:kVCamPreferencesPath];
+    cachedOffsetX = MAX(-1.0, MIN(1.0, [prefs[kVCamOffsetXKey] doubleValue]));
+    cachedOffsetY = MAX(-1.0, MIN(1.0, [prefs[kVCamOffsetYKey] doubleValue]));
+    double zoom = [prefs[kVCamZoomKey] doubleValue];
+    cachedZoom = MAX(0.5, MIN(3.0, zoom == 0.0 ? 1.0 : zoom));
+    cachedBrightness = MAX(-1.0, MIN(1.0, [prefs[kVCamBrightnessKey] doubleValue]));
+}
 
 static void writeLoadStatus(NSString *message, BOOL loaded) {
     NSDictionary *status = @{
@@ -75,6 +94,7 @@ static void freeMedia(void) {
     }
     videoFrameCount = 0;
     currentFrameIndex = 0;
+    videoPreferredTransform = CGAffineTransformIdentity;
     currentMode = VCamModeNone;
 }
 
@@ -107,6 +127,7 @@ static BOOL loadVideoMedia(NSString *path, NSUInteger maxFrames) {
     NSArray *tracks = [asset tracksWithMediaType:AVMediaTypeVideo];
     if (tracks.count == 0) return NO;
     AVAssetTrack *videoTrack = tracks[0];
+    videoPreferredTransform = videoTrack.preferredTransform;
 
     NSError *error = nil;
     AVAssetReader *reader = [[AVAssetReader alloc] initWithAsset:asset error:&error];
@@ -157,6 +178,7 @@ void loadReplacementMedia(void) {
     // 1) Read (and cache) preferences.
     NSString *mediaPath = currentPrefsMediaPath();
     BOOL enabled = currentPrefsEnabled();
+    readAdjustmentPreferences();
     if (![mediaPath isEqualToString:cachedMediaPath]) {
         cachedMediaPath = [mediaPath copy];
     }
@@ -198,6 +220,13 @@ void loadReplacementMedia(void) {
     [vcamLock unlock];
 }
 
+void reloadReplacementAdjustments(void) {
+    ensureVCamLock();
+    [vcamLock lock];
+    readAdjustmentPreferences();
+    [vcamLock unlock];
+}
+
 void unloadReplacementMedia(void) {
     ensureVCamLock();
     [vcamLock lock];
@@ -219,11 +248,17 @@ BOOL drawReplacementOntoBuffer(CVPixelBufferRef targetBuffer) {
         CVPixelBufferRef frame = videoFrames[currentFrameIndex];
         currentFrameIndex = (currentFrameIndex + 1) % videoFrameCount;
         replacementCIImage = [CIImage imageWithCVPixelBuffer:frame];
+        replacementCIImage = [replacementCIImage imageByApplyingTransform:videoPreferredTransform];
     }
 
     if (!replacementCIImage || !sharedCIContext) {
         [vcamLock unlock];
         return NO;
+    }
+
+    if (fabs(cachedBrightness) > 0.001) {
+        replacementCIImage = [replacementCIImage imageByApplyingFilter:@"CIColorControls"
+            withInputParameters:@{kCIInputBrightnessKey: @(cachedBrightness)}];
     }
 
     CGFloat targetWidth  = CVPixelBufferGetWidth(targetBuffer);
@@ -238,13 +273,13 @@ BOOL drawReplacementOntoBuffer(CVPixelBufferRef targetBuffer) {
         CGAffineTransformMakeTranslation(-extent.origin.x, -extent.origin.y)];
     CGRect normalizedExtent = normalized.extent;
     CGFloat scale = MAX(targetWidth / normalizedExtent.size.width,
-                        targetHeight / normalizedExtent.size.height);
+                        targetHeight / normalizedExtent.size.height) * cachedZoom;
     CGAffineTransform scaleXform = CGAffineTransformMakeScale(scale, scale);
     CIImage *scaled = [normalized imageByApplyingTransform:scaleXform];
     CGRect scaledExtent = scaled.extent;
 
-    CGFloat offX = (targetWidth  - scaledExtent.size.width)  / 2.0;
-    CGFloat offY = (targetHeight - scaledExtent.size.height) / 2.0;
+    CGFloat offX = (targetWidth  - scaledExtent.size.width)  / 2.0 + cachedOffsetX * targetWidth;
+    CGFloat offY = (targetHeight - scaledExtent.size.height) / 2.0 + cachedOffsetY * targetHeight;
     CGAffineTransform translate = CGAffineTransformMakeTranslation(offX, offY);
     CGRect targetRect = CGRectMake(0, 0, targetWidth, targetHeight);
     CIImage *filled = [[scaled imageByApplyingTransform:translate] imageByCroppingToRect:targetRect];

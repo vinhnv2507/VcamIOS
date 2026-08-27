@@ -30,6 +30,7 @@ jobs:
           test "$(dpkg-deb --field "$deb" Package)" = "com.yourcompany.vcam"
           test "$(dpkg-deb --field "$deb" Architecture)" = "iphoneos-arm"
           dpkg-deb --contents "$deb" | grep -q 'Library/MobileSubstrate/DynamicLibraries/vcam.dylib'
+          dpkg-deb --contents "$deb" | grep -q 'Library/MobileSubstrate/DynamicLibraries/VCamOverlay.dylib'
           dpkg-deb --contents "$deb" | grep -q 'Applications/VCam.app/VCam'
           dpkg-deb --contents "$deb" | grep -q 'Applications/VCam.app/Info.plist'
           if dpkg-deb --contents "$deb" | grep -q 'var/jb'; then

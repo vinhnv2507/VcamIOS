@@ -10,11 +10,15 @@ INSTALL_TARGET_PROCESSES = mediaserverd
 
 include $(THEOS)/makefiles/common.mk
 
-TWEAK_NAME = vcam
+TWEAK_NAME = vcam VCamOverlay
 
 vcam_FILES = Tweak.x image_utils.m
 vcam_CFLAGS = -fobjc-arc -Wno-deprecated-declarations
 vcam_FRAMEWORKS = AVFoundation CoreMedia CoreImage ImageIO Foundation
+
+VCamOverlay_FILES = VCamOverlay.m
+VCamOverlay_CFLAGS = -fobjc-arc
+VCamOverlay_FRAMEWORKS = UIKit Foundation
 
 include $(THEOS_MAKE_PATH)/tweak.mk
 

@@ -5,10 +5,17 @@
 FOUNDATION_EXPORT NSString *const kVCamPreferencesPath;
 FOUNDATION_EXPORT NSString *const kVCamEnabledKey;
 FOUNDATION_EXPORT NSString *const kVCamMediaPathKey;
+FOUNDATION_EXPORT NSString *const kVCamOffsetXKey;
+FOUNDATION_EXPORT NSString *const kVCamOffsetYKey;
+FOUNDATION_EXPORT NSString *const kVCamZoomKey;
+FOUNDATION_EXPORT NSString *const kVCamBrightnessKey;
 
 /// (Re)loads replacement media from the current preference path.
 /// Safe to call multiple times; frees previous media first.
 void loadReplacementMedia(void);
+
+/// Refreshes position, zoom and brightness without reloading the media file.
+void reloadReplacementAdjustments(void);
 
 /// Draws the currently-loaded replacement media onto targetBuffer,
 /// preserving aspect ratio (letterbox). Returns YES on success.
