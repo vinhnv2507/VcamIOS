@@ -63,19 +63,28 @@ jobs:
           sudo apt-get install -y apt-utils dpkg-dev
           mkdir -p apt-repo
           cp packages/*.deb apt-repo/
+          repo_deb="$(find apt-repo -maxdepth 1 -name '*.deb' -print -quit)"
+          repo_version="$(dpkg-deb --field "$repo_deb" Version)"
           cd apt-repo
           apt-ftparchive packages . > Packages
           gzip -9c Packages > Packages.gz
+          bzip2 -9c Packages > Packages.bz2
+          xz -9c Packages > Packages.xz
+          cd ..
+          release_checksums="$(mktemp)"
+          (cd apt-repo && apt-ftparchive release .) > "$release_checksums"
           {
             echo "Origin: VCam"
             echo "Label: VCam for NekoJB"
             echo "Suite: stable"
+            echo "Version: $repo_version"
             echo "Codename: neko-rootful"
             echo "Architectures: iphoneos-arm"
             echo "Components: main"
             echo "Description: VCam rootful repository"
-            apt-ftparchive release .
-          } > Release
+            cat "$release_checksums"
+          } > apt-repo/Release
+          rm -f "$release_checksums"
 
       - name: Publish APT repository branch
         uses: peaceiris/actions-gh-pages@v4
