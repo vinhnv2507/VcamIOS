@@ -2,7 +2,6 @@
 #import <Foundation/Foundation.h>
 
 /// Preferences bundle identifier used to store runtime settings.
-FOUNDATION_EXPORT NSString *const kVCamPreferencesPath;
 FOUNDATION_EXPORT NSString *const kVCamEnabledKey;
 FOUNDATION_EXPORT NSString *const kVCamMediaPathKey;
 FOUNDATION_EXPORT NSString *const kVCamOffsetXKey;

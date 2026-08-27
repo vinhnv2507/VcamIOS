@@ -3,11 +3,11 @@
 #import <CoreMedia/CoreMedia.h>
 #import <CoreImage/CoreImage.h>
 #import <ImageIO/ImageIO.h>
+#import "VCamPaths.h"
 #include <stdlib.h>
 #include <math.h>
 
 // ---- Preferences bundle ----
-NSString *const kVCamPreferencesPath = @"/tmp/com.yourcompany.vcam.plist";
 NSString *const kVCamEnabledKey = @"enabled";
 NSString *const kVCamMediaPathKey = @"mediaPath";
 NSString *const kVCamOffsetXKey = @"offsetX";
@@ -46,7 +46,7 @@ static CGFloat cachedZoom = 1.0;
 static CGFloat cachedBrightness = 0.0;
 
 static void readAdjustmentPreferences(void) {
-    NSDictionary *prefs = [NSDictionary dictionaryWithContentsOfFile:kVCamPreferencesPath];
+    NSDictionary *prefs = [NSDictionary dictionaryWithContentsOfFile:VCamPreferencesFile()];
     cachedOffsetX = MAX(-1.0, MIN(1.0, [prefs[kVCamOffsetXKey] doubleValue]));
     cachedOffsetY = MAX(-1.0, MIN(1.0, [prefs[kVCamOffsetYKey] doubleValue]));
     double zoom = [prefs[kVCamZoomKey] doubleValue];
@@ -60,11 +60,11 @@ static void writeLoadStatus(NSString *message, BOOL loaded) {
         @"message": message ?: @"Unknown",
         @"timestamp": [NSDate date]
     };
-    [status writeToFile:@"/tmp/com.yourcompany.vcam.status.plist" atomically:YES];
+    [status writeToFile:VCamStatusFile() atomically:YES];
 }
 
 static NSString *currentPrefsMediaPath(void) {
-    NSDictionary *prefs = [NSDictionary dictionaryWithContentsOfFile:kVCamPreferencesPath];
+    NSDictionary *prefs = [NSDictionary dictionaryWithContentsOfFile:VCamPreferencesFile()];
     NSString *path = prefs[kVCamMediaPathKey];
     if (![path isKindOfClass:[NSString class]] || path.length == 0) {
         return nil;
@@ -73,7 +73,7 @@ static NSString *currentPrefsMediaPath(void) {
 }
 
 static BOOL currentPrefsEnabled(void) {
-    NSDictionary *prefs = [NSDictionary dictionaryWithContentsOfFile:kVCamPreferencesPath];
+    NSDictionary *prefs = [NSDictionary dictionaryWithContentsOfFile:VCamPreferencesFile()];
     id enabled = prefs[kVCamEnabledKey];
     if (enabled == nil) return YES; // default enabled
     return [enabled boolValue];

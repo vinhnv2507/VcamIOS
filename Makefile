@@ -12,19 +12,19 @@ include $(THEOS)/makefiles/common.mk
 
 TWEAK_NAME = vcam VCamOverlay
 
-vcam_FILES = Tweak.x image_utils.m
+vcam_FILES = Tweak.x image_utils.m VCamPaths.m
 vcam_CFLAGS = -fobjc-arc -Wno-deprecated-declarations
 vcam_FRAMEWORKS = AVFoundation CoreMedia CoreImage ImageIO Foundation
 
-VCamOverlay_FILES = VCamOverlay.m
+VCamOverlay_FILES = VCamOverlay.m VCamPaths.m
 VCamOverlay_CFLAGS = -fobjc-arc
-VCamOverlay_FRAMEWORKS = UIKit Foundation
+VCamOverlay_FRAMEWORKS = UIKit Foundation AVFoundation
 
 include $(THEOS_MAKE_PATH)/tweak.mk
 
 APPLICATION_NAME = VCam
 
-VCam_FILES = VCamApp/main.m
+VCam_FILES = VCamApp/main.m VCamPaths.m
 VCam_CFLAGS = -fobjc-arc -Wno-deprecated-declarations
 VCam_FRAMEWORKS = UIKit Foundation Photos AVFoundation
 VCam_RESOURCE_DIRS = VCamApp/Resources

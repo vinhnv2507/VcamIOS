@@ -1,7 +1,9 @@
 #import <UIKit/UIKit.h>
 #import <CoreFoundation/CoreFoundation.h>
+#import <AVFoundation/AVFoundation.h>
+#import <objc/runtime.h>
+#import "VCamPaths.h"
 
-static NSString *const VCamOverlayPreferencesPath = @"/tmp/com.yourcompany.vcam.plist";
 static NSString *const VCamOverlayNotification = @"com.yourcompany.vcam.adjustments.changed";
 
 @interface VCamPassThroughWindow : UIWindow
@@ -155,14 +157,14 @@ static NSString *const VCamOverlayNotification = @"com.yourcompany.vcam.adjustme
 }
 
 - (NSMutableDictionary *)preferences {
-    NSDictionary *stored = [NSDictionary dictionaryWithContentsOfFile:VCamOverlayPreferencesPath];
+    NSDictionary *stored = [NSDictionary dictionaryWithContentsOfFile:VCamPreferencesFile()];
     return stored ? [stored mutableCopy] : [NSMutableDictionary dictionary];
 }
 
 - (void)save:(NSMutableDictionary *)preferences {
-    [preferences writeToFile:VCamOverlayPreferencesPath atomically:YES];
+    [preferences writeToFile:VCamPreferencesFile() atomically:YES];
     [[NSFileManager defaultManager] setAttributes:@{NSFilePosixPermissions: @0666}
-        ofItemAtPath:VCamOverlayPreferencesPath error:nil];
+        ofItemAtPath:VCamPreferencesFile() error:nil];
     CFNotificationCenterPostNotification(CFNotificationCenterGetDarwinNotifyCenter(),
         (__bridge CFStringRef)VCamOverlayNotification, NULL, NULL, YES);
 }
@@ -195,12 +197,12 @@ static NSString *const VCamOverlayNotification = @"com.yourcompany.vcam.adjustme
 @end
 
 static VCamPassThroughWindow *vcamOverlayWindow = nil;
+static IMP vcamOriginalStartRunning = NULL;
+static IMP vcamOriginalStopRunning = NULL;
 
-__attribute__((constructor))
-static void VCamOverlayInitialize(void) {
-    @autoreleasepool {
-        if (![[NSProcessInfo processInfo].processName isEqualToString:@"Camera"]) return;
-        dispatch_async(dispatch_get_main_queue(), ^{
+static void VCamShowOverlay(void) {
+    dispatch_async(dispatch_get_main_queue(), ^{
+        if (!vcamOverlayWindow) {
             UIWindowScene *windowScene = nil;
             for (UIScene *scene in [UIApplication sharedApplication].connectedScenes) {
                 if ([scene isKindOfClass:[UIWindowScene class]]) {
@@ -217,7 +219,38 @@ static void VCamOverlayInitialize(void) {
             vcamOverlayWindow.rootViewController = [[VCamOverlayController alloc] init];
             vcamOverlayWindow.windowLevel = UIWindowLevelAlert + 100.0;
             vcamOverlayWindow.backgroundColor = [UIColor clearColor];
-            vcamOverlayWindow.hidden = NO;
-        });
+        }
+        vcamOverlayWindow.hidden = NO;
+    });
+}
+
+static void VCamHideOverlay(void) {
+    dispatch_async(dispatch_get_main_queue(), ^{
+        vcamOverlayWindow.hidden = YES;
+    });
+}
+
+static void VCamCaptureSessionStart(id session, SEL selector) {
+    ((void (*)(id, SEL))vcamOriginalStartRunning)(session, selector);
+    VCamShowOverlay();
+}
+
+static void VCamCaptureSessionStop(id session, SEL selector) {
+    ((void (*)(id, SEL))vcamOriginalStopRunning)(session, selector);
+    VCamHideOverlay();
+}
+
+__attribute__((constructor))
+static void VCamOverlayInitialize(void) {
+    @autoreleasepool {
+        Class sessionClass = NSClassFromString(@"AVCaptureSession");
+        Method startMethod = class_getInstanceMethod(sessionClass, @selector(startRunning));
+        Method stopMethod = class_getInstanceMethod(sessionClass, @selector(stopRunning));
+        if (startMethod) {
+            vcamOriginalStartRunning = method_setImplementation(startMethod, (IMP)VCamCaptureSessionStart);
+        }
+        if (stopMethod) {
+            vcamOriginalStopRunning = method_setImplementation(stopMethod, (IMP)VCamCaptureSessionStop);
+        }
     }
 }
