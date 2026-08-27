@@ -28,7 +28,7 @@ jobs:
           test -n "$deb"
           dpkg-deb --info "$deb"
           test "$(dpkg-deb --field "$deb" Package)" = "com.yourcompany.vcam"
-          test "$(dpkg-deb --field "$deb" Architecture)" = "iphoneos-arm"
+          test "$(dpkg-deb --field "$deb" Architecture)" = "all"
           dpkg-deb --contents "$deb" | grep -q 'Library/MobileSubstrate/DynamicLibraries/vcam.dylib'
           dpkg-deb --contents "$deb" | grep -q 'Library/MobileSubstrate/DynamicLibraries/VCamOverlay.dylib'
           dpkg-deb --contents "$deb" | grep -q 'Applications/VCam.app/VCam'
@@ -79,7 +79,7 @@ jobs:
             echo "Suite: stable"
             echo "Version: $repo_version"
             echo "Codename: neko-rootful"
-            echo "Architectures: iphoneos-arm"
+            echo "Architectures: iphoneos-arm iphoneos-arm64"
             echo "Components: main"
             echo "Description: VCam rootful repository"
             cat "$release_checksums"
