@@ -1,6 +1,7 @@
 #import <UIKit/UIKit.h>
 #import <CoreFoundation/CoreFoundation.h>
 #import <Photos/Photos.h>
+#import <PhotosUI/PhotosUI.h>
 #import <AVFoundation/AVFoundation.h>
 #import "../VCamPaths.h"
 
@@ -10,7 +11,7 @@ static NSString *const VCamNotificationName = @"com.yourcompany.vcam.prefs.chang
 static NSString *const VCamImageMediaType = @"public.image";
 static NSString *const VCamMovieMediaType = @"public.movie";
 
-@interface VCamViewController : UIViewController <UIImagePickerControllerDelegate, UINavigationControllerDelegate>
+@interface VCamViewController : UIViewController <UIImagePickerControllerDelegate, UINavigationControllerDelegate, PHPickerViewControllerDelegate>
 @property(nonatomic, strong) UISwitch *enabledSwitch;
 @property(nonatomic, strong) UILabel *statusLabel;
 @property(nonatomic, strong) UILabel *daemonStatusLabel;
@@ -153,14 +154,10 @@ static NSString *const VCamMovieMediaType = @"public.movie";
 }
 
 - (BOOL)prepareSharedStorage:(NSError **)error {
-    NSFileManager *manager = [NSFileManager defaultManager];
-    if (![manager createDirectoryAtPath:VCamSharedDirectory()
-        withIntermediateDirectories:YES
-        attributes:@{NSFilePosixPermissions: @0777}
-        error:error]) return NO;
-    [manager setAttributes:@{NSFilePosixPermissions: @0777}
-        ofItemAtPath:VCamSharedDirectory() error:nil];
-    return YES;
+    NSString *probe = VCamMediaFile(@"probe");
+    BOOL writable = [[NSData dataWithBytes:"V" length:1] writeToFile:probe options:0 error:error];
+    if (writable) [[NSFileManager defaultManager] removeItemAtPath:probe error:nil];
+    return writable;
 }
 
 - (NSMutableDictionary *)preferences {
@@ -225,7 +222,19 @@ static NSString *const VCamMovieMediaType = @"public.movie";
 }
 
 - (void)selectVideo {
-    [self presentPickerForMediaType:VCamMovieMediaType];
+    NSError *storageError = nil;
+    if (![self prepareSharedStorage:&storageError]) {
+        [self showMessage:storageError.localizedDescription ?: @"Không thể mở bộ nhớ dùng chung của VCam."];
+        return;
+    }
+    PHPickerConfiguration *configuration = [[PHPickerConfiguration alloc]
+        initWithPhotoLibrary:[PHPhotoLibrary sharedPhotoLibrary]];
+    configuration.filter = [PHPickerFilter videosFilter];
+    configuration.selectionLimit = 1;
+    configuration.preferredAssetRepresentationMode = PHPickerConfigurationAssetRepresentationModeCurrent;
+    PHPickerViewController *picker = [[PHPickerViewController alloc] initWithConfiguration:configuration];
+    picker.delegate = self;
+    [self presentViewController:picker animated:YES completion:nil];
 }
 
 - (void)presentPickerForMediaType:(NSString *)mediaType {
@@ -244,6 +253,54 @@ static NSString *const VCamMovieMediaType = @"public.movie";
     picker.videoQuality = UIImagePickerControllerQualityTypeHigh;
     picker.delegate = self;
     [self presentViewController:picker animated:YES completion:nil];
+}
+
+- (void)picker:(PHPickerViewController *)picker didFinishPicking:(NSArray<PHPickerResult *> *)results {
+    [picker dismissViewControllerAnimated:YES completion:nil];
+    PHPickerResult *result = results.firstObject;
+    if (!result) return;
+
+    NSItemProvider *provider = result.itemProvider;
+    if (![provider hasItemConformingToTypeIdentifier:VCamMovieMediaType]) {
+        [self showMessage:@"Video đã chọn không có định dạng mà VCam có thể đọc."];
+        return;
+    }
+
+    self.statusLabel.text = @"Đang nhập video…";
+    [provider loadFileRepresentationForTypeIdentifier:VCamMovieMediaType
+        completionHandler:^(NSURL *url, NSError *fileError) {
+            NSError *copyError = nil;
+            NSString *destination = nil;
+            BOOL copied = url && [self copyPickedVideoAtURL:url destination:&destination error:&copyError];
+            if (copied) {
+                dispatch_async(dispatch_get_main_queue(), ^{
+                    [self applySelectedMediaAtPath:destination];
+                });
+                return;
+            }
+
+            // Some Photos providers deny access to their temporary MOV URL.
+            // Asking NSItemProvider for bytes uses its sandbox extension instead.
+            [provider loadDataRepresentationForTypeIdentifier:VCamMovieMediaType
+                completionHandler:^(NSData *data, NSError *dataError) {
+                    NSString *dataPath = VCamMediaFile(@"mov");
+                    NSError *writeError = nil;
+                    BOOL written = data.length > 0 && [data writeToFile:dataPath
+                        options:0 error:&writeError];
+                    dispatch_async(dispatch_get_main_queue(), ^{
+                        if (written) {
+                            [self applySelectedMediaAtPath:dataPath];
+                        } else {
+                            NSError *finalError = dataError ?: writeError ?: copyError ?: fileError;
+                            NSString *detail = finalError ? [NSString stringWithFormat:@"%@ (%@/%ld)",
+                                finalError.localizedDescription, finalError.domain, (long)finalError.code]
+                                : @"Photos không trả về dữ liệu video.";
+                            [self showMessage:detail];
+                            [self reloadState];
+                        }
+                    });
+                }];
+        }];
 }
 
 - (void)imagePickerControllerDidCancel:(UIImagePickerController *)picker {

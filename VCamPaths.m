@@ -5,9 +5,10 @@ BOOL VCamIsRootless(void) {
 }
 
 NSString *VCamSharedDirectory(void) {
-    // /tmp is private/redirected for some rootless application processes.
-    // postinst creates this shared directory before the rootless app starts.
-    return VCamIsRootless() ? @"/var/mobile/Library/VCam" : @"/tmp";
+    // mediaserverd is sandboxed away from /var/mobile/Library on newer iOS.
+    // The global temporary directory is visible to both the platform app and
+    // the camera daemons on rootful and rootless jailbreaks.
+    return @"/private/var/tmp";
 }
 
 NSString *VCamPreferencesFile(void) {
@@ -20,6 +21,6 @@ NSString *VCamStatusFile(void) {
 
 NSString *VCamMediaFile(NSString *extension) {
     NSString *name = [NSString stringWithFormat:@"media-%@.%@",
-        NSUUID.UUID.UUIDString, extension.length ? extension : @"dat"];
+        [[NSUUID UUID] UUIDString], extension.length ? extension : @"dat"];
     return [VCamSharedDirectory() stringByAppendingPathComponent:name];
 }

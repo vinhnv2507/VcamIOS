@@ -1,9 +1,6 @@
 #!/bin/sh
 
 if [ "$1" = "configure" ]; then
-	mkdir -p "/var/mobile/Library/VCam" >/dev/null 2>&1 || true
-	chown 501:501 "/var/mobile/Library/VCam" >/dev/null 2>&1 || true
-	chmod 0777 "/var/mobile/Library/VCam" >/dev/null 2>&1 || true
 	if command -v uicache >/dev/null 2>&1; then
 		vcam_app=/Applications/VCam.app
 		if [ -d /var/jb/Applications/VCam.app ]; then
@@ -12,6 +9,7 @@ if [ "$1" = "configure" ]; then
 		uicache -p "$vcam_app" >/dev/null 2>&1 || uicache >/dev/null 2>&1 || true
 	fi
 	killall -9 mediaserverd >/dev/null 2>&1 || true
+	killall -9 cameracaptured >/dev/null 2>&1 || true
 	killall -9 Camera >/dev/null 2>&1 || true
 fi
 
