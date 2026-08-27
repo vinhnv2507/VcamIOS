@@ -43,7 +43,17 @@ static void vcamAdjustmentsChanged(CFNotificationCenterRef center, void *observe
     // First frame: (re)load media from preferences.
     vcam_ensureLoaded();
 
-    drawReplacementOntoBuffer(originalImageBuffer);
+    // Camera callbacks may run without a short-lived autorelease pool. Core
+    // Image creates temporary objects for every frame, so drain them here and
+    // never let an unsupported buffer exception terminate the camera daemon.
+    @autoreleasepool {
+        @try {
+            drawReplacementOntoBuffer(originalImageBuffer);
+        } @catch (NSException *exception) {
+            // Leave the real camera frame untouched when Core Image rejects a
+            // transient/auxiliary pixel-buffer format.
+        }
+    }
 
     %orig(sampleBuffer);
 }

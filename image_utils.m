@@ -6,6 +6,7 @@
 #import "VCamPaths.h"
 #include <stdlib.h>
 #include <math.h>
+#include <string.h>
 
 // ---- Preferences bundle ----
 NSString *const kVCamEnabledKey = @"enabled";
@@ -30,9 +31,11 @@ static CGImageRef replacementImage = NULL;
 static NSArray<NSString *> *videoFramePaths = nil;
 static CGImageRef currentVideoImage = NULL;
 static NSUInteger videoFrameIndex = 0;
-static NSUInteger videoOutputCounter = 0;
+static CFAbsoluteTime nextVideoFrameTime = 0;
 static CIContext *sharedCIContext = NULL;
 static NSLock *vcamLock = NULL;
+static NSMutableDictionary<NSString *, id> *renderedFrameCache = nil;
+static CGColorSpaceRef sharedColorSpace = NULL;
 
 static void ensureVCamLock(void) {
     if (vcamLock == NULL) {
@@ -100,7 +103,8 @@ static void freeMedia(void) {
     }
     videoFramePaths = nil;
     videoFrameIndex = 0;
-    videoOutputCounter = 0;
+    nextVideoFrameTime = 0;
+    [renderedFrameCache removeAllObjects];
     currentMode = VCamModeNone;
 }
 
@@ -109,12 +113,13 @@ static void freeMedia(void) {
 static BOOL loadImageMedia(NSString *path) {
     CGImageSourceRef source = CGImageSourceCreateWithURL((__bridge CFURLRef)[NSURL fileURLWithPath:path], NULL);
     if (!source) return NO;
-    // Downsample for large images to bound memory usage (target <= ~4K).
+    // iPhone 7 camera daemons have a tight memory budget. A 4K decoded JPEG
+    // alone can occupy over 50 MB, so keep the source near preview resolution.
     CGImageRef image = CGImageSourceCreateThumbnailAtIndex(source, 0, (__bridge CFDictionaryRef)@{
         (id)kCGImageSourceCreateThumbnailFromImageAlways : @YES,
         (id)kCGImageSourceCreateThumbnailWithTransform : @YES,
         (id)kCGImageSourceShouldCacheImmediately : @YES,
-        (id)kCGImageSourceThumbnailMaxPixelSize : @(3840)
+        (id)kCGImageSourceThumbnailMaxPixelSize : @(2048)
     });
     if (image) {
         replacementImage = image; // takes ownership of +1 retain
@@ -170,6 +175,12 @@ void loadReplacementMedia(void) {
     if (sharedCIContext == NULL) {
         sharedCIContext = [CIContext context];
     }
+    if (renderedFrameCache == nil) {
+        renderedFrameCache = [NSMutableDictionary dictionary];
+    }
+    if (sharedColorSpace == NULL) {
+        sharedColorSpace = CGColorSpaceCreateDeviceRGB();
+    }
 
     // 5) Load based on extension.
     NSString *ext = [cachedMediaPath pathExtension].lowercaseString;
@@ -195,6 +206,7 @@ void reloadReplacementAdjustments(void) {
     ensureVCamLock();
     [vcamLock lock];
     readAdjustmentPreferences();
+    [renderedFrameCache removeAllObjects];
     [vcamLock unlock];
 }
 
@@ -203,6 +215,63 @@ void unloadReplacementMedia(void) {
     [vcamLock lock];
     freeMedia();
     [vcamLock unlock];
+}
+
+static BOOL copyRenderedBuffer(CVPixelBufferRef source, CVPixelBufferRef destination) {
+    if (!source || !destination ||
+        CVPixelBufferGetWidth(source) != CVPixelBufferGetWidth(destination) ||
+        CVPixelBufferGetHeight(source) != CVPixelBufferGetHeight(destination) ||
+        CVPixelBufferGetPixelFormatType(source) != CVPixelBufferGetPixelFormatType(destination)) {
+        return NO;
+    }
+
+    CVReturn sourceLock = CVPixelBufferLockBaseAddress(source, kCVPixelBufferLock_ReadOnly);
+    if (sourceLock != kCVReturnSuccess) return NO;
+    CVReturn destinationLock = CVPixelBufferLockBaseAddress(destination, 0);
+    if (destinationLock != kCVReturnSuccess) {
+        CVPixelBufferUnlockBaseAddress(source, kCVPixelBufferLock_ReadOnly);
+        return NO;
+    }
+
+    BOOL copied = YES;
+    size_t planeCount = CVPixelBufferGetPlaneCount(source);
+    if (planeCount > 0 && planeCount == CVPixelBufferGetPlaneCount(destination)) {
+        for (size_t plane = 0; plane < planeCount; plane++) {
+            uint8_t *sourceBase = CVPixelBufferGetBaseAddressOfPlane(source, plane);
+            uint8_t *destinationBase = CVPixelBufferGetBaseAddressOfPlane(destination, plane);
+            size_t rows = MIN(CVPixelBufferGetHeightOfPlane(source, plane),
+                              CVPixelBufferGetHeightOfPlane(destination, plane));
+            size_t sourceStride = CVPixelBufferGetBytesPerRowOfPlane(source, plane);
+            size_t destinationStride = CVPixelBufferGetBytesPerRowOfPlane(destination, plane);
+            size_t bytesPerRow = MIN(sourceStride, destinationStride);
+            if (!sourceBase || !destinationBase) { copied = NO; break; }
+            for (size_t row = 0; row < rows; row++) {
+                memcpy(destinationBase + row * destinationStride,
+                       sourceBase + row * sourceStride, bytesPerRow);
+            }
+        }
+    } else if (planeCount == 0 && CVPixelBufferGetPlaneCount(destination) == 0) {
+        uint8_t *sourceBase = CVPixelBufferGetBaseAddress(source);
+        uint8_t *destinationBase = CVPixelBufferGetBaseAddress(destination);
+        size_t rows = MIN(CVPixelBufferGetHeight(source), CVPixelBufferGetHeight(destination));
+        size_t sourceStride = CVPixelBufferGetBytesPerRow(source);
+        size_t destinationStride = CVPixelBufferGetBytesPerRow(destination);
+        size_t bytesPerRow = MIN(sourceStride, destinationStride);
+        if (!sourceBase || !destinationBase) {
+            copied = NO;
+        } else {
+            for (size_t row = 0; row < rows; row++) {
+                memcpy(destinationBase + row * destinationStride,
+                       sourceBase + row * sourceStride, bytesPerRow);
+            }
+        }
+    } else {
+        copied = NO;
+    }
+
+    CVPixelBufferUnlockBaseAddress(destination, 0);
+    CVPixelBufferUnlockBaseAddress(source, kCVPixelBufferLock_ReadOnly);
+    return copied;
 }
 
 BOOL drawReplacementOntoBuffer(CVPixelBufferRef targetBuffer) {
@@ -215,12 +284,10 @@ BOOL drawReplacementOntoBuffer(CVPixelBufferRef targetBuffer) {
     ensureVCamLock();
     [vcamLock lock];
 
-    CIImage *replacementCIImage = nil;
-    if (currentMode == VCamModeImage && replacementImage) {
-        replacementCIImage = [CIImage imageWithCGImage:replacementImage];
-    }
-    else if (currentMode == VCamModeVideo && videoFramePaths.count > 0) {
-        if (!currentVideoImage || (videoOutputCounter % 5) == 0) {
+    BOOL videoFrameChanged = NO;
+    if (currentMode == VCamModeVideo && videoFramePaths.count > 0) {
+        CFAbsoluteTime now = CFAbsoluteTimeGetCurrent();
+        if (!currentVideoImage || now >= nextVideoFrameTime) {
             NSString *framePath = videoFramePaths[videoFrameIndex];
             CGImageSourceRef source = CGImageSourceCreateWithURL(
                 (__bridge CFURLRef)[NSURL fileURLWithPath:framePath], NULL);
@@ -230,9 +297,28 @@ BOOL drawReplacementOntoBuffer(CVPixelBufferRef targetBuffer) {
                 if (currentVideoImage) CGImageRelease(currentVideoImage);
                 currentVideoImage = nextImage;
                 videoFrameIndex = (videoFrameIndex + 1) % videoFramePaths.count;
+                videoFrameChanged = YES;
             }
+            nextVideoFrameTime = now + (1.0 / 6.0);
         }
-        videoOutputCounter++;
+    }
+    if (videoFrameChanged) [renderedFrameCache removeAllObjects];
+
+    OSType pixelFormat = CVPixelBufferGetPixelFormatType(targetBuffer);
+    NSString *cacheKey = [NSString stringWithFormat:@"%zux%zu-%u",
+        (size_t)targetWidth, (size_t)targetHeight, (unsigned int)pixelFormat];
+    CVPixelBufferRef cachedBuffer = (__bridge CVPixelBufferRef)renderedFrameCache[cacheKey];
+    if (cachedBuffer) {
+        BOOL copied = copyRenderedBuffer(cachedBuffer, targetBuffer);
+        [vcamLock unlock];
+        return copied;
+    }
+
+    CIImage *replacementCIImage = nil;
+    if (currentMode == VCamModeImage && replacementImage) {
+        replacementCIImage = [CIImage imageWithCGImage:replacementImage];
+    }
+    else if (currentMode == VCamModeVideo && videoFramePaths.count > 0) {
         if (currentVideoImage) replacementCIImage = [CIImage imageWithCGImage:currentVideoImage];
     }
 
@@ -286,15 +372,32 @@ BOOL drawReplacementOntoBuffer(CVPixelBufferRef targetBuffer) {
         [CIColor colorWithRed:0 green:0 blue:0 alpha:1]] imageByCroppingToRect:targetRect];
     CIImage *final = [filled imageByCompositingOverImage:background];
 
-    CGColorSpaceRef colorSpace = CGColorSpaceCreateDeviceRGB();
-    [sharedCIContext render:final
-            toCVPixelBuffer:targetBuffer
-                     bounds:targetRect
-                 colorSpace:colorSpace];
-    CGColorSpaceRelease(colorSpace);
+    CVPixelBufferRef renderedBuffer = NULL;
+    NSDictionary *attributes = @{(id)kCVPixelBufferIOSurfacePropertiesKey: @{}};
+    CVReturn createResult = CVPixelBufferCreate(kCFAllocatorDefault,
+        (size_t)targetWidth, (size_t)targetHeight, pixelFormat,
+        (__bridge CFDictionaryRef)attributes, &renderedBuffer);
+    if (createResult != kCVReturnSuccess || !renderedBuffer) {
+        [vcamLock unlock];
+        return NO;
+    }
+
+    @try {
+        [sharedCIContext render:final
+                toCVPixelBuffer:renderedBuffer
+                         bounds:targetRect
+                     colorSpace:sharedColorSpace];
+    } @catch (NSException *exception) {
+        CVPixelBufferRelease(renderedBuffer);
+        [vcamLock unlock];
+        return NO;
+    }
+    BOOL copied = copyRenderedBuffer(renderedBuffer, targetBuffer);
+    if (copied) renderedFrameCache[cacheKey] = (__bridge id)renderedBuffer;
+    CVPixelBufferRelease(renderedBuffer);
 
     [vcamLock unlock];
-    return YES;
+    return copied;
 }
 
 // Lifelong state construction (safe on first use; we own it for process lifetime).

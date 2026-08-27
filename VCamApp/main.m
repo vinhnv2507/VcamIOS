@@ -3,6 +3,7 @@
 #import <Photos/Photos.h>
 #import <PhotosUI/PhotosUI.h>
 #import <AVFoundation/AVFoundation.h>
+#import <CoreImage/CoreImage.h>
 #import "../VCamPaths.h"
 #include <math.h>
 
@@ -17,7 +18,7 @@ static NSString *const VCamMovieMediaType = @"public.movie";
 @property(nonatomic, strong) UILabel *statusLabel;
 @property(nonatomic, strong) UILabel *daemonStatusLabel;
 @property(nonatomic, strong) UIImageView *previewView;
-@property(nonatomic, strong) AVAssetImageGenerator *videoGenerator;
+@property(nonatomic, strong) AVAssetReader *videoReader;
 - (BOOL)prepareSharedStorage:(NSError **)error;
 - (void)applySelectedMediaAtPath:(NSString *)path;
 - (void)prepareVideoFramesAtPath:(NSString *)path;
@@ -571,12 +572,13 @@ didFinishPickingMediaWithInfo:(NSDictionary<UIImagePickerControllerInfoKey, id> 
 }
 
 - (void)prepareVideoFramesAtPath:(NSString *)path {
-    [self.videoGenerator cancelAllCGImageGeneration];
+    [self.videoReader cancelReading];
     self.statusLabel.text = @"Đang chuẩn bị video an toàn cho Camera…";
     dispatch_async(dispatch_get_global_queue(QOS_CLASS_USER_INITIATED, 0), ^{
         AVURLAsset *asset = [AVURLAsset assetWithURL:[NSURL fileURLWithPath:path]];
         double duration = CMTimeGetSeconds(asset.duration);
-        if (!isfinite(duration) || duration <= 0.0 || [asset tracksWithMediaType:AVMediaTypeVideo].count == 0) {
+        NSArray<AVAssetTrack *> *tracks = [asset tracksWithMediaType:AVMediaTypeVideo];
+        if (!isfinite(duration) || duration <= 0.0 || tracks.count == 0) {
             dispatch_async(dispatch_get_main_queue(), ^{
                 [self showMessage:@"Video không có track hình ảnh hợp lệ."];
                 [self reloadState];
@@ -584,8 +586,11 @@ didFinishPickingMediaWithInfo:(NSDictionary<UIImagePickerControllerInfoKey, id> 
             return;
         }
 
-        NSInteger frameCount = MAX(1, MIN(120, (NSInteger)ceil(duration * 6.0)));
-        double interval = duration / (double)frameCount;
+        // Decode sequentially instead of issuing many random AVAssetImageGenerator
+        // seeks. The latter can remain pending forever for some HEVC/MOV assets on
+        // iOS 15. Keep the first 20 seconds at 6 fps for bounded RAM and disk use.
+        double preparedDuration = MIN(duration, 20.0);
+        NSInteger frameCount = MAX(1, (NSInteger)ceil(preparedDuration * 6.0));
 
         NSString *frameDirectory = VCamMediaFile(@"vcamframes");
         NSError *directoryError = nil;
@@ -598,23 +603,87 @@ didFinishPickingMediaWithInfo:(NSDictionary<UIImagePickerControllerInfoKey, id> 
             return;
         }
 
-        AVAssetImageGenerator *generator = [[AVAssetImageGenerator alloc] initWithAsset:asset];
-        self.videoGenerator = generator;
-        generator.appliesPreferredTrackTransform = YES;
-        generator.maximumSize = CGSizeMake(960.0, 960.0);
-        generator.requestedTimeToleranceBefore = CMTimeMakeWithSeconds(interval * 0.45, 600);
-        generator.requestedTimeToleranceAfter = CMTimeMakeWithSeconds(interval * 0.45, 600);
+        AVAssetTrack *track = tracks.firstObject;
+        CGSize naturalSize = track.naturalSize;
+        CGAffineTransform preferredTransform = track.preferredTransform;
+        CGRect sourceRect = CGRectMake(0, 0, naturalSize.width, naturalSize.height);
+        CGRect orientedRect = CGRectApplyAffineTransform(sourceRect, preferredTransform);
+        CGFloat orientedWidth = fabs(CGRectGetWidth(orientedRect));
+        CGFloat orientedHeight = fabs(CGRectGetHeight(orientedRect));
+        CGFloat largestSide = MAX(orientedWidth, orientedHeight);
+        CGFloat outputScale = largestSide > 960.0 ? 960.0 / largestSide : 1.0;
+
+        CGAffineTransform normalizedTransform = CGAffineTransformConcat(preferredTransform,
+            CGAffineTransformMakeTranslation(-CGRectGetMinX(orientedRect), -CGRectGetMinY(orientedRect)));
+        normalizedTransform = CGAffineTransformConcat(normalizedTransform,
+            CGAffineTransformMakeScale(outputScale, outputScale));
+
+        AVMutableVideoComposition *composition = [AVMutableVideoComposition videoComposition];
+        composition.frameDuration = CMTimeMake(1, 6);
+        composition.renderSize = CGSizeMake(MAX(2.0, floor(orientedWidth * outputScale)),
+                                             MAX(2.0, floor(orientedHeight * outputScale)));
+        AVMutableVideoCompositionInstruction *instruction =
+            [AVMutableVideoCompositionInstruction videoCompositionInstruction];
+        instruction.timeRange = CMTimeRangeMake(kCMTimeZero, asset.duration);
+        AVMutableVideoCompositionLayerInstruction *layerInstruction =
+            [AVMutableVideoCompositionLayerInstruction videoCompositionLayerInstructionWithAssetTrack:track];
+        [layerInstruction setTransform:normalizedTransform atTime:kCMTimeZero];
+        instruction.layerInstructions = @[layerInstruction];
+        composition.instructions = @[instruction];
+
+        NSError *readerError = nil;
+        AVAssetReader *reader = [[AVAssetReader alloc] initWithAsset:asset error:&readerError];
+        NSDictionary *outputSettings = @{
+            (NSString *)kCVPixelBufferPixelFormatTypeKey: @(kCVPixelFormatType_32BGRA),
+            (NSString *)kCVPixelBufferIOSurfacePropertiesKey: @{}
+        };
+        AVAssetReaderVideoCompositionOutput *output = [[AVAssetReaderVideoCompositionOutput alloc]
+            initWithVideoTracks:@[track] videoSettings:outputSettings];
+        output.videoComposition = composition;
+        output.alwaysCopiesSampleData = NO;
+        if (!reader || ![reader canAddOutput:output]) {
+            [[NSFileManager defaultManager] removeItemAtPath:frameDirectory error:nil];
+            dispatch_async(dispatch_get_main_queue(), ^{
+                NSString *detail = readerError ? [NSString stringWithFormat:@"%@ (%@/%ld)",
+                    readerError.localizedDescription, readerError.domain, (long)readerError.code]
+                    : @"Không thể tạo bộ giải mã video.";
+                [self showMessage:detail];
+                [self reloadState];
+            });
+            return;
+        }
+        [reader addOutput:output];
+        reader.timeRange = CMTimeRangeMake(kCMTimeZero, CMTimeMakeWithSeconds(preparedDuration, 600));
+        self.videoReader = reader;
+        if (![reader startReading]) {
+            NSError *startError = reader.error;
+            [[NSFileManager defaultManager] removeItemAtPath:frameDirectory error:nil];
+            dispatch_async(dispatch_get_main_queue(), ^{
+                self.videoReader = nil;
+                NSString *detail = startError ? [NSString stringWithFormat:@"%@ (%@/%ld)",
+                    startError.localizedDescription, startError.domain, (long)startError.code]
+                    : @"Không thể bắt đầu giải mã video.";
+                [self showMessage:detail];
+                [self reloadState];
+            });
+            return;
+        }
 
         NSInteger saved = 0;
         NSError *lastError = nil;
-        for (NSInteger index = 0; index < frameCount; index++) {
+        CIContext *imageContext = [CIContext contextWithOptions:nil];
+        while (saved < frameCount) {
             @autoreleasepool {
-                CMTime requestedTime = CMTimeMakeWithSeconds(index * interval, 600);
-                NSError *frameError = nil;
-                CGImageRef image = [generator copyCGImageAtTime:requestedTime
-                    actualTime:NULL error:&frameError];
+                CMSampleBufferRef sample = [output copyNextSampleBuffer];
+                if (!sample) break;
+                CVPixelBufferRef pixelBuffer = CMSampleBufferGetImageBuffer(sample);
+                CGImageRef image = NULL;
+                if (pixelBuffer) {
+                    CIImage *ciImage = [CIImage imageWithCVPixelBuffer:pixelBuffer];
+                    image = [imageContext createCGImage:ciImage fromRect:ciImage.extent];
+                }
                 if (image) {
-                    NSString *frameName = [NSString stringWithFormat:@"frame-%05ld.jpg", (long)index];
+                    NSString *frameName = [NSString stringWithFormat:@"frame-%05ld.jpg", (long)saved];
                     NSString *framePath = [frameDirectory stringByAppendingPathComponent:frameName];
                     NSData *jpeg = UIImageJPEGRepresentation([UIImage imageWithCGImage:image], 0.82);
                     NSError *frameWriteError = nil;
@@ -626,26 +695,29 @@ didFinishPickingMediaWithInfo:(NSDictionary<UIImagePickerControllerInfoKey, id> 
                         lastError = frameWriteError;
                     }
                     CGImageRelease(image);
-                } else if (frameError) {
-                    lastError = frameError;
                 }
+                CFRelease(sample);
 
-                if ((index % 6) == 0 || index == frameCount - 1) {
-                    NSInteger progress = (NSInteger)llround(((double)(index + 1) / (double)frameCount) * 100.0);
+                if ((saved % 6) == 0 || saved == frameCount) {
+                    NSInteger progress = (NSInteger)llround(((double)saved / (double)frameCount) * 100.0);
                     dispatch_async(dispatch_get_main_queue(), ^{
                         self.statusLabel.text = [NSString stringWithFormat:@"Đang chuẩn bị video… %ld%%", (long)progress];
                     });
                 }
             }
         }
+        if (reader.status == AVAssetReaderStatusFailed) lastError = reader.error;
 
         dispatch_async(dispatch_get_main_queue(), ^{
-            self.videoGenerator = nil;
+            self.videoReader = nil;
             if (saved > 0) {
                 [self applySelectedMediaAtPath:frameDirectory];
             } else {
                 [[NSFileManager defaultManager] removeItemAtPath:frameDirectory error:nil];
-                [self showMessage:lastError.localizedDescription ?: @"Không trích xuất được frame từ video."];
+                NSString *detail = lastError ? [NSString stringWithFormat:@"%@ (%@/%ld)",
+                    lastError.localizedDescription, lastError.domain, (long)lastError.code]
+                    : @"Không trích xuất được frame từ video.";
+                [self showMessage:detail];
                 [self reloadState];
             }
         });
