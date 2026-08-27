@@ -5,7 +5,8 @@
 
 static NSString *const VCamPreferencesPath = @"/tmp/com.yourcompany.vcam.plist";
 static NSString *const VCamStatusPath = @"/tmp/com.yourcompany.vcam.status.plist";
-static NSString *const VCamMediaDirectory = @"/tmp/VCam";
+static NSString *const VCamLegacyMediaDirectory = @"/tmp/VCam";
+static NSString *const VCamMediaPrefix = @"/tmp/com.yourcompany.vcam.media";
 static NSString *const VCamNotificationName = @"com.yourcompany.vcam.prefs.changed";
 static NSString *const VCamImageMediaType = @"public.image";
 static NSString *const VCamMovieMediaType = @"public.movie";
@@ -16,7 +17,6 @@ static NSString *const VCamMovieMediaType = @"public.movie";
 @property(nonatomic, strong) UILabel *daemonStatusLabel;
 @property(nonatomic, strong) UIImageView *previewView;
 - (void)applySelectedMediaAtPath:(NSString *)path;
-- (void)exportVideoAsset:(AVAsset *)asset;
 - (void)importVideoResourceForAsset:(PHAsset *)asset;
 - (BOOL)copyPickedVideoAtURL:(NSURL *)sourceURL destination:(NSString **)destination error:(NSError **)error;
 @end
@@ -131,7 +131,6 @@ static NSString *const VCamMovieMediaType = @"public.movie";
         [buttonStack.heightAnchor constraintEqualToConstant:50.0]
     ]];
 
-    [self ensureMediaDirectory];
     [self reloadState];
 }
 
@@ -150,16 +149,6 @@ static NSString *const VCamMovieMediaType = @"public.movie";
     button.layer.cornerRadius = 12.0;
     [button addTarget:self action:selector forControlEvents:UIControlEventTouchUpInside];
     return button;
-}
-
-- (void)ensureMediaDirectory {
-    NSFileManager *manager = [NSFileManager defaultManager];
-    [manager createDirectoryAtPath:VCamMediaDirectory
-       withIntermediateDirectories:YES
-                        attributes:@{NSFilePosixPermissions: @0777}
-                             error:nil];
-    [manager setAttributes:@{NSFilePosixPermissions: @0777}
-              ofItemAtPath:VCamMediaDirectory error:nil];
 }
 
 - (NSMutableDictionary *)preferences {
@@ -252,7 +241,7 @@ didFinishPickingMediaWithInfo:(NSDictionary<UIImagePickerControllerInfoKey, id> 
         NSError *error = nil;
         UIImage *image = info[UIImagePickerControllerOriginalImage];
         NSData *data = UIImageJPEGRepresentation(image, 0.92);
-        NSString *destination = [VCamMediaDirectory stringByAppendingPathComponent:@"replacement.jpg"];
+        NSString *destination = [VCamMediaPrefix stringByAppendingPathExtension:@"jpg"];
         if (!data || ![data writeToFile:destination options:NSDataWritingAtomic error:&error]) {
             destination = nil;
         }
@@ -269,25 +258,40 @@ didFinishPickingMediaWithInfo:(NSDictionary<UIImagePickerControllerInfoKey, id> 
     if ([mediaType isEqualToString:VCamMovieMediaType]) {
         PHAsset *photoAsset = info[UIImagePickerControllerPHAsset];
         NSURL *fallbackURL = info[UIImagePickerControllerMediaURL];
-        NSError *copyError = nil;
-        NSString *copiedVideoPath = nil;
-
-        // UIImagePickerController owns mediaURL only while the picker is alive.
-        // Copy it before dismissing; exporting it afterwards is what caused the
-        // generic "operation could not be completed" error on iOS 15.
-        BOOL copied = fallbackURL && [self copyPickedVideoAtURL:fallbackURL
-            destination:&copiedVideoPath error:&copyError];
-        [picker dismissViewControllerAnimated:YES completion:^{
-            self.statusLabel.text = @"Đang nhập video…";
-            if (copied) {
-                [self applySelectedMediaAtPath:copiedVideoPath];
-            } else if (photoAsset) {
-                [self importVideoResourceForAsset:photoAsset];
-            } else {
-                [self showMessage:copyError.localizedDescription ?: @"Không tìm thấy dữ liệu video đã chọn."];
-                [self reloadState];
-            }
-        }];
+        if (fallbackURL) {
+            // Keep the picker alive while its temporary URL is being read.
+            // A background stream avoids FileManager's destination-directory
+            // permission check and does not freeze the UI for large videos.
+            dispatch_async(dispatch_get_global_queue(QOS_CLASS_USER_INITIATED, 0), ^{
+                NSError *copyError = nil;
+                NSString *copiedVideoPath = nil;
+                BOOL copied = [self copyPickedVideoAtURL:fallbackURL
+                    destination:&copiedVideoPath error:&copyError];
+                dispatch_async(dispatch_get_main_queue(), ^{
+                    [picker dismissViewControllerAnimated:YES completion:^{
+                        self.statusLabel.text = @"Đang nhập video…";
+                        if (copied) {
+                            [self applySelectedMediaAtPath:copiedVideoPath];
+                        } else if (photoAsset) {
+                            [self importVideoResourceForAsset:photoAsset];
+                        } else {
+                            [self showMessage:copyError.localizedDescription ?: @"Không tìm thấy dữ liệu video đã chọn."];
+                            [self reloadState];
+                        }
+                    }];
+                });
+            });
+        } else {
+            [picker dismissViewControllerAnimated:YES completion:^{
+                self.statusLabel.text = @"Đang nhập video…";
+                if (photoAsset) {
+                    [self importVideoResourceForAsset:photoAsset];
+                } else {
+                    [self showMessage:@"Không tìm thấy dữ liệu video đã chọn."];
+                    [self reloadState];
+                }
+            }];
+        }
         return;
     }
 
@@ -297,22 +301,49 @@ didFinishPickingMediaWithInfo:(NSDictionary<UIImagePickerControllerInfoKey, id> 
 }
 
 - (BOOL)copyPickedVideoAtURL:(NSURL *)sourceURL destination:(NSString **)destination error:(NSError **)error {
-    [self ensureMediaDirectory];
     NSString *extension = sourceURL.pathExtension.lowercaseString;
     if (![@[@"mp4", @"mov", @"m4v"] containsObject:extension]) extension = @"mov";
 
-    NSString *temporary = [VCamMediaDirectory stringByAppendingPathComponent:
-        [NSString stringWithFormat:@"importing.%@", extension]];
-    NSString *finalPath = [VCamMediaDirectory stringByAppendingPathComponent:
-        [NSString stringWithFormat:@"replacement.%@", extension]];
+    NSString *temporary = [NSString stringWithFormat:@"%@.importing.%@", VCamMediaPrefix, extension];
+    NSString *finalPath = [VCamMediaPrefix stringByAppendingPathExtension:extension];
     NSFileManager *manager = [NSFileManager defaultManager];
     [manager removeItemAtPath:temporary error:nil];
 
     BOOL scoped = [sourceURL startAccessingSecurityScopedResource];
-    BOOL copied = [manager copyItemAtURL:sourceURL
-        toURL:[NSURL fileURLWithPath:temporary] error:error];
+    NSInputStream *input = [NSInputStream inputStreamWithURL:sourceURL];
+    NSOutputStream *output = [NSOutputStream outputStreamToFileAtPath:temporary append:NO];
+    [input open];
+    [output open];
+
+    uint8_t buffer[64 * 1024];
+    BOOL copied = YES;
+    while (copied) {
+        NSInteger bytesRead = [input read:buffer maxLength:sizeof(buffer)];
+        if (bytesRead == 0) break;
+        if (bytesRead < 0) {
+            copied = NO;
+            break;
+        }
+        NSInteger offset = 0;
+        while (offset < bytesRead) {
+            NSInteger bytesWritten = [output write:buffer + offset maxLength:(NSUInteger)(bytesRead - offset)];
+            if (bytesWritten <= 0) {
+                copied = NO;
+                break;
+            }
+            offset += bytesWritten;
+        }
+    }
+    NSError *streamError = input.streamError ?: output.streamError;
+    [input close];
+    [output close];
     if (scoped) [sourceURL stopAccessingSecurityScopedResource];
-    if (!copied) return NO;
+    if (!copied) {
+        [manager removeItemAtPath:temporary error:nil];
+        if (error) *error = streamError ?: [NSError errorWithDomain:@"VCamVideoImport"
+            code:1 userInfo:@{NSLocalizedDescriptionKey: @"Không thể đọc hoặc ghi dữ liệu video đã chọn."}];
+        return NO;
+    }
 
     [manager removeItemAtPath:finalPath error:nil];
     if (![manager moveItemAtPath:temporary toPath:finalPath error:error]) {
@@ -344,10 +375,8 @@ didFinishPickingMediaWithInfo:(NSDictionary<UIImagePickerControllerInfoKey, id> 
 
     NSString *extension = selectedResource.originalFilename.pathExtension.lowercaseString;
     if (![@[@"mp4", @"mov", @"m4v"] containsObject:extension]) extension = @"mov";
-    NSString *temporary = [VCamMediaDirectory stringByAppendingPathComponent:
-        [NSString stringWithFormat:@"importing.%@", extension]];
-    NSString *destination = [VCamMediaDirectory stringByAppendingPathComponent:
-        [NSString stringWithFormat:@"replacement.%@", extension]];
+    NSString *temporary = [NSString stringWithFormat:@"%@.importing.%@", VCamMediaPrefix, extension];
+    NSString *destination = [VCamMediaPrefix stringByAppendingPathExtension:extension];
     [[NSFileManager defaultManager] removeItemAtPath:temporary error:nil];
 
     PHAssetResourceRequestOptions *options = [[PHAssetResourceRequestOptions alloc] init];
@@ -408,10 +437,8 @@ didFinishPickingMediaWithInfo:(NSDictionary<UIImagePickerControllerInfoKey, id> 
         return;
     }
 
-    NSString *temporary = [VCamMediaDirectory stringByAppendingPathComponent:
-        [NSString stringWithFormat:@"exporting.%@", extension]];
-    NSString *destination = [VCamMediaDirectory stringByAppendingPathComponent:
-        [NSString stringWithFormat:@"replacement.%@", extension]];
+    NSString *temporary = [NSString stringWithFormat:@"%@.exporting.%@", VCamMediaPrefix, extension];
+    NSString *destination = [VCamMediaPrefix stringByAppendingPathExtension:extension];
     [[NSFileManager defaultManager] removeItemAtPath:temporary error:nil];
     exporter.outputURL = [NSURL fileURLWithPath:temporary];
     exporter.outputFileType = fileType;
@@ -459,11 +486,23 @@ didFinishPickingMediaWithInfo:(NSDictionary<UIImagePickerControllerInfoKey, id> 
 }
 
 - (void)removeOldMediaExcept:(NSString *)keptPath {
-    NSArray<NSString *> *files = [[NSFileManager defaultManager] contentsOfDirectoryAtPath:VCamMediaDirectory error:nil];
+    NSFileManager *manager = [NSFileManager defaultManager];
+    for (NSString *extension in @[@"jpg", @"jpeg", @"png", @"mov", @"mp4", @"m4v"]) {
+        NSArray<NSString *> *paths = @[
+            [VCamMediaPrefix stringByAppendingPathExtension:extension],
+            [NSString stringWithFormat:@"%@.importing.%@", VCamMediaPrefix, extension],
+            [NSString stringWithFormat:@"%@.exporting.%@", VCamMediaPrefix, extension]
+        ];
+        for (NSString *path in paths) {
+            if (![path isEqualToString:keptPath]) [manager removeItemAtPath:path error:nil];
+        }
+    }
+
+    NSArray<NSString *> *files = [manager contentsOfDirectoryAtPath:VCamLegacyMediaDirectory error:nil];
     for (NSString *file in files) {
-        NSString *path = [VCamMediaDirectory stringByAppendingPathComponent:file];
+        NSString *path = [VCamLegacyMediaDirectory stringByAppendingPathComponent:file];
         if (![path isEqualToString:keptPath]) {
-            [[NSFileManager defaultManager] removeItemAtPath:path error:nil];
+            [manager removeItemAtPath:path error:nil];
         }
     }
 }
