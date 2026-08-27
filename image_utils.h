@@ -8,6 +8,9 @@ FOUNDATION_EXPORT NSString *const kVCamOffsetXKey;
 FOUNDATION_EXPORT NSString *const kVCamOffsetYKey;
 FOUNDATION_EXPORT NSString *const kVCamZoomKey;
 FOUNDATION_EXPORT NSString *const kVCamBrightnessKey;
+FOUNDATION_EXPORT NSString *const kVCamRotationKey;
+FOUNDATION_EXPORT NSString *const kVCamFlipHorizontalKey;
+FOUNDATION_EXPORT NSString *const kVCamFlipVerticalKey;
 
 /// (Re)loads replacement media from the current preference path.
 /// Safe to call multiple times; frees previous media first.

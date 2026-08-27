@@ -4,9 +4,9 @@
 <dict>
 	<key>Filter</key>
 	<dict>
-		<key>Classes</key>
+		<key>Bundles</key>
 		<array>
-			<string>AVCaptureSession</string>
+			<string>com.apple.UIKit</string>
 		</array>
 	</dict>
 </dict>

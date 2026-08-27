@@ -14,6 +14,9 @@ NSString *const kVCamOffsetXKey = @"offsetX";
 NSString *const kVCamOffsetYKey = @"offsetY";
 NSString *const kVCamZoomKey = @"zoom";
 NSString *const kVCamBrightnessKey = @"brightness";
+NSString *const kVCamRotationKey = @"rotation";
+NSString *const kVCamFlipHorizontalKey = @"flipHorizontal";
+NSString *const kVCamFlipVerticalKey = @"flipVertical";
 
 typedef NS_ENUM(NSInteger, VCamMode) {
     VCamModeNone = 0,
@@ -24,9 +27,9 @@ typedef NS_ENUM(NSInteger, VCamMode) {
 // ---- State (all guarded by vcamLock) ----
 static VCamMode currentMode = VCamModeNone;
 static CGImageRef replacementImage = NULL;
-static CVPixelBufferRef *videoFrames = NULL;
-static size_t videoFrameCount = 0;
-static size_t currentFrameIndex = 0;
+static AVURLAsset *videoAsset = nil;
+static AVAssetReader *videoReader = nil;
+static AVAssetReaderTrackOutput *videoOutput = nil;
 static CGAffineTransform videoPreferredTransform;
 static CIContext *sharedCIContext = NULL;
 static NSLock *vcamLock = NULL;
@@ -44,6 +47,9 @@ static CGFloat cachedOffsetX = 0.0;
 static CGFloat cachedOffsetY = 0.0;
 static CGFloat cachedZoom = 1.0;
 static CGFloat cachedBrightness = 0.0;
+static CGFloat cachedRotation = 0.0;
+static BOOL cachedFlipHorizontal = NO;
+static BOOL cachedFlipVertical = NO;
 
 static void readAdjustmentPreferences(void) {
     NSDictionary *prefs = [NSDictionary dictionaryWithContentsOfFile:VCamPreferencesFile()];
@@ -52,6 +58,9 @@ static void readAdjustmentPreferences(void) {
     double zoom = [prefs[kVCamZoomKey] doubleValue];
     cachedZoom = MAX(0.5, MIN(3.0, zoom == 0.0 ? 1.0 : zoom));
     cachedBrightness = MAX(-1.0, MIN(1.0, [prefs[kVCamBrightnessKey] doubleValue]));
+    cachedRotation = [prefs[kVCamRotationKey] doubleValue];
+    cachedFlipHorizontal = [prefs[kVCamFlipHorizontalKey] boolValue];
+    cachedFlipVertical = [prefs[kVCamFlipVerticalKey] boolValue];
 }
 
 static void writeLoadStatus(NSString *message, BOOL loaded) {
@@ -85,15 +94,10 @@ static void freeMedia(void) {
         CGImageRelease(replacementImage);
         replacementImage = NULL;
     }
-    if (videoFrames) {
-        for (size_t i = 0; i < videoFrameCount; i++) {
-            if (videoFrames[i]) CVPixelBufferRelease(videoFrames[i]);
-        }
-        free(videoFrames);
-        videoFrames = NULL;
-    }
-    videoFrameCount = 0;
-    currentFrameIndex = 0;
+    [videoReader cancelReading];
+    videoOutput = nil;
+    videoReader = nil;
+    videoAsset = nil;
     videoPreferredTransform = CGAffineTransformIdentity;
     currentMode = VCamModeNone;
 }
@@ -120,55 +124,40 @@ static BOOL loadImageMedia(NSString *path) {
     return NO;
 }
 
-/// Loads a video and extracts frames into a bounded ring-buffer of CVPixelBuffers.
+/// Creates a streaming reader. Only the current decoded frame is held in RAM.
 /// Must be called with vcamLock held.
-static BOOL loadVideoMedia(NSString *path, NSUInteger maxFrames) {
-    AVURLAsset *asset = [AVURLAsset assetWithURL:[NSURL fileURLWithPath:path]];
-    NSArray *tracks = [asset tracksWithMediaType:AVMediaTypeVideo];
+static BOOL startVideoReader(void) {
+    if (!videoAsset) return NO;
+    NSArray *tracks = [videoAsset tracksWithMediaType:AVMediaTypeVideo];
     if (tracks.count == 0) return NO;
     AVAssetTrack *videoTrack = tracks[0];
-    videoPreferredTransform = videoTrack.preferredTransform;
 
     NSError *error = nil;
-    AVAssetReader *reader = [[AVAssetReader alloc] initWithAsset:asset error:&error];
-    if (error) return NO;
-
-    NSDictionary *outputSettings = @{ (NSString *)kCVPixelBufferPixelFormatTypeKey : @(kCVPixelFormatType_32BGRA) };
-    AVAssetReaderTrackOutput *output = [[AVAssetReaderTrackOutput alloc] initWithTrack:videoTrack outputSettings:outputSettings];
+    AVAssetReader *reader = [[AVAssetReader alloc] initWithAsset:videoAsset error:&error];
+    if (!reader || error) return NO;
+    NSDictionary *settings = @{
+        (NSString *)kCVPixelBufferPixelFormatTypeKey: @(kCVPixelFormatType_32BGRA),
+        (NSString *)kCVPixelBufferIOSurfacePropertiesKey: @{}
+    };
+    AVAssetReaderTrackOutput *output = [[AVAssetReaderTrackOutput alloc]
+        initWithTrack:videoTrack outputSettings:settings];
     output.alwaysCopiesSampleData = NO;
-
     if (![reader canAddOutput:output]) return NO;
     [reader addOutput:output];
     if (![reader startReading]) return NO;
+    videoReader = reader;
+    videoOutput = output;
+    return YES;
+}
 
-    // Pre-allocate the ring buffer.
-    videoFrames = calloc(maxFrames, sizeof(CVPixelBufferRef));
-    if (!videoFrames) { [reader cancelReading]; return NO; }
-
-    size_t count = 0;
-    while (reader.status == AVAssetReaderStatusReading && count < maxFrames) {
-        CMSampleBufferRef sampleBuffer = [output copyNextSampleBuffer];
-        if (!sampleBuffer) break;
-        CVPixelBufferRef pb = CMSampleBufferGetImageBuffer(sampleBuffer);
-        if (pb) {
-            CVPixelBufferRetain(pb);
-            videoFrames[count++] = pb;
-        }
-        CFRelease(sampleBuffer);
-    }
-    [reader cancelReading];
-
-    if (count > 0) {
-        videoFrameCount = count;
-        currentMode = VCamModeVideo;
-        return YES;
-    }
-    for (size_t i = 0; i < count; i++) {
-        if (videoFrames[i]) CVPixelBufferRelease(videoFrames[i]);
-    }
-    free(videoFrames);
-    videoFrames = NULL;
-    return NO;
+static BOOL loadVideoMedia(NSString *path) {
+    videoAsset = [AVURLAsset assetWithURL:[NSURL fileURLWithPath:path]];
+    NSArray *tracks = [videoAsset tracksWithMediaType:AVMediaTypeVideo];
+    if (tracks.count == 0) { videoAsset = nil; return NO; }
+    videoPreferredTransform = ((AVAssetTrack *)tracks[0]).preferredTransform;
+    if (!startVideoReader()) { videoAsset = nil; return NO; }
+    currentMode = VCamModeVideo;
+    return YES;
 }
 
 void loadReplacementMedia(void) {
@@ -206,8 +195,7 @@ void loadReplacementMedia(void) {
         loaded = loadImageMedia(cachedMediaPath);
     }
     else if ([ext isEqualToString:@"mp4"] || [ext isEqualToString:@"mov"] || [ext isEqualToString:@"m4v"]) {
-        // Keep the daemon's peak memory bounded while still providing a short loop.
-        loaded = loadVideoMedia(cachedMediaPath, 30);
+        loaded = loadVideoMedia(cachedMediaPath);
     }
 
     if (!loaded) {
@@ -237,21 +225,36 @@ void unloadReplacementMedia(void) {
 BOOL drawReplacementOntoBuffer(CVPixelBufferRef targetBuffer) {
     if (!targetBuffer) return NO;
 
+    CGFloat targetWidth = CVPixelBufferGetWidth(targetBuffer);
+    CGFloat targetHeight = CVPixelBufferGetHeight(targetBuffer);
+    if (targetWidth <= 0 || targetHeight <= 0) return NO;
+
     ensureVCamLock();
     [vcamLock lock];
 
+    CMSampleBufferRef activeVideoSample = NULL;
     CIImage *replacementCIImage = nil;
     if (currentMode == VCamModeImage && replacementImage) {
         replacementCIImage = [CIImage imageWithCGImage:replacementImage];
     }
-    else if (currentMode == VCamModeVideo && videoFrames && videoFrameCount > 0) {
-        CVPixelBufferRef frame = videoFrames[currentFrameIndex];
-        currentFrameIndex = (currentFrameIndex + 1) % videoFrameCount;
-        replacementCIImage = [CIImage imageWithCVPixelBuffer:frame];
-        replacementCIImage = [replacementCIImage imageByApplyingTransform:videoPreferredTransform];
+    else if (currentMode == VCamModeVideo && videoOutput) {
+        activeVideoSample = [videoOutput copyNextSampleBuffer];
+        if (!activeVideoSample) {
+            // End of file: create a fresh reader and loop from the first frame.
+            [videoReader cancelReading];
+            videoReader = nil;
+            videoOutput = nil;
+            if (startVideoReader()) activeVideoSample = [videoOutput copyNextSampleBuffer];
+        }
+        CVPixelBufferRef frame = activeVideoSample ? CMSampleBufferGetImageBuffer(activeVideoSample) : NULL;
+        if (frame) {
+            replacementCIImage = [CIImage imageWithCVPixelBuffer:frame];
+            replacementCIImage = [replacementCIImage imageByApplyingTransform:videoPreferredTransform];
+        }
     }
 
     if (!replacementCIImage || !sharedCIContext) {
+        if (activeVideoSample) CFRelease(activeVideoSample);
         [vcamLock unlock];
         return NO;
     }
@@ -261,12 +264,27 @@ BOOL drawReplacementOntoBuffer(CVPixelBufferRef targetBuffer) {
             withInputParameters:@{kCIInputBrightnessKey: @(cachedBrightness)}];
     }
 
-    CGFloat targetWidth  = CVPixelBufferGetWidth(targetBuffer);
-    CGFloat targetHeight = CVPixelBufferGetHeight(targetBuffer);
-    if (targetWidth <= 0 || targetHeight <= 0) { [vcamLock unlock]; return NO; }
-
     CGRect extent = replacementCIImage.extent;
-    if (extent.size.width <= 0 || extent.size.height <= 0) { [vcamLock unlock]; return NO; }
+    if (extent.size.width <= 0 || extent.size.height <= 0) {
+        if (activeVideoSample) CFRelease(activeVideoSample);
+        [vcamLock unlock];
+        return NO;
+    }
+
+    CGFloat radians = cachedRotation * (CGFloat)M_PI / 180.0;
+    if (fabs(radians) > 0.0001 || cachedFlipHorizontal || cachedFlipVertical) {
+        CGFloat centerX = CGRectGetMidX(extent);
+        CGFloat centerY = CGRectGetMidY(extent);
+        CGAffineTransform transform = CGAffineTransformIdentity;
+        transform = CGAffineTransformTranslate(transform, centerX, centerY);
+        transform = CGAffineTransformRotate(transform, radians);
+        transform = CGAffineTransformScale(transform,
+            cachedFlipHorizontal ? -1.0 : 1.0,
+            cachedFlipVertical ? -1.0 : 1.0);
+        transform = CGAffineTransformTranslate(transform, -centerX, -centerY);
+        replacementCIImage = [replacementCIImage imageByApplyingTransform:transform];
+        extent = replacementCIImage.extent;
+    }
 
     // Normalize EXIF/transformed origins, then aspect-fill the entire camera frame.
     CIImage *normalized = [replacementCIImage imageByApplyingTransform:
@@ -294,6 +312,7 @@ BOOL drawReplacementOntoBuffer(CVPixelBufferRef targetBuffer) {
                  colorSpace:colorSpace];
     CGColorSpaceRelease(colorSpace);
 
+    if (activeVideoSample) CFRelease(activeVideoSample);
     [vcamLock unlock];
     return YES;
 }

@@ -1,7 +1,6 @@
 #import <UIKit/UIKit.h>
 #import <CoreFoundation/CoreFoundation.h>
 #import <AVFoundation/AVFoundation.h>
-#import <objc/runtime.h>
 #import "VCamPaths.h"
 
 static NSString *const VCamOverlayNotification = @"com.yourcompany.vcam.adjustments.changed";
@@ -51,7 +50,7 @@ static NSString *const VCamOverlayNotification = @"com.yourcompany.vcam.adjustme
 
 - (void)buildPanel {
     CGFloat width = MIN(310.0, CGRectGetWidth(self.view.bounds) - 28.0);
-    self.panel = [[UIView alloc] initWithFrame:CGRectMake(0, 0, width, 350.0)];
+    self.panel = [[UIView alloc] initWithFrame:CGRectMake(0, 0, width, 452.0)];
     self.panel.center = self.view.center;
     self.panel.autoresizingMask = UIViewAutoresizingFlexibleLeftMargin |
         UIViewAutoresizingFlexibleRightMargin | UIViewAutoresizingFlexibleTopMargin |
@@ -105,7 +104,31 @@ static NSString *const VCamOverlayNotification = @"com.yourcompany.vcam.adjustme
     [self.panel addSubview:darken];
     [self.panel addSubview:brighten];
 
-    UILabel *hint = [[UILabel alloc] initWithFrame:CGRectMake(12, 320, width - 24, 20)];
+    UILabel *rotationLabel = [self panelLabel:@"Xoay 360°"];
+    rotationLabel.frame = CGRectMake(16, 322, 72, 42);
+    [self.panel addSubview:rotationLabel];
+    UIButton *rotateLeft = [self wideButton:@"↺ 15°" action:@selector(rotateLeft)];
+    rotateLeft.titleLabel.font = [UIFont boldSystemFontOfSize:15.0];
+    rotateLeft.frame = CGRectMake(91, 322, 91, 42);
+    UIButton *rotateRight = [self wideButton:@"↻ 15°" action:@selector(rotateRight)];
+    rotateRight.titleLabel.font = [UIFont boldSystemFontOfSize:15.0];
+    rotateRight.frame = CGRectMake(188, 322, width - 204, 42);
+    [self.panel addSubview:rotateLeft];
+    [self.panel addSubview:rotateRight];
+
+    UILabel *flipLabel = [self panelLabel:@"Lật"];
+    flipLabel.frame = CGRectMake(16, 374, 72, 42);
+    [self.panel addSubview:flipLabel];
+    UIButton *flipHorizontal = [self wideButton:@"↔ Ngang" action:@selector(flipHorizontal)];
+    flipHorizontal.titleLabel.font = [UIFont boldSystemFontOfSize:14.0];
+    flipHorizontal.frame = CGRectMake(91, 374, 91, 42);
+    UIButton *flipVertical = [self wideButton:@"↕ Dọc" action:@selector(flipVertical)];
+    flipVertical.titleLabel.font = [UIFont boldSystemFontOfSize:14.0];
+    flipVertical.frame = CGRectMake(188, 374, width - 204, 42);
+    [self.panel addSubview:flipHorizontal];
+    [self.panel addSubview:flipVertical];
+
+    UILabel *hint = [[UILabel alloc] initWithFrame:CGRectMake(12, 424, width - 24, 20)];
     hint.text = @"● đặt lại  •  kéo nút VC để di chuyển";
     hint.textAlignment = NSTextAlignmentCenter;
     hint.textColor = [UIColor colorWithWhite:1 alpha:0.65];
@@ -185,20 +208,38 @@ static NSString *const VCamOverlayNotification = @"com.yourcompany.vcam.adjustme
 - (void)zoomOut { [self adjust:@"zoom" delta:-0.1 minimum:0.5 maximum:3.0]; }
 - (void)brighten { [self adjust:@"brightness" delta:0.08 minimum:-1.0 maximum:1.0]; }
 - (void)darken { [self adjust:@"brightness" delta:-0.08 minimum:-1.0 maximum:1.0]; }
+- (void)rotateBy:(CGFloat)degrees {
+    NSMutableDictionary *preferences = [self preferences];
+    CGFloat rotation = [preferences[@"rotation"] doubleValue] + degrees;
+    while (rotation >= 360.0) rotation -= 360.0;
+    while (rotation < 0.0) rotation += 360.0;
+    preferences[@"rotation"] = @(rotation);
+    [self save:preferences];
+}
+- (void)rotateLeft { [self rotateBy:-15.0]; }
+- (void)rotateRight { [self rotateBy:15.0]; }
+- (void)toggleBoolean:(NSString *)key {
+    NSMutableDictionary *preferences = [self preferences];
+    preferences[key] = @(![preferences[key] boolValue]);
+    [self save:preferences];
+}
+- (void)flipHorizontal { [self toggleBoolean:@"flipHorizontal"]; }
+- (void)flipVertical { [self toggleBoolean:@"flipVertical"]; }
 - (void)resetAdjustments {
     NSMutableDictionary *preferences = [self preferences];
     preferences[@"offsetX"] = @0.0;
     preferences[@"offsetY"] = @0.0;
     preferences[@"zoom"] = @1.0;
     preferences[@"brightness"] = @0.0;
+    preferences[@"rotation"] = @0.0;
+    preferences[@"flipHorizontal"] = @NO;
+    preferences[@"flipVertical"] = @NO;
     [self save:preferences];
 }
 
 @end
 
 static VCamPassThroughWindow *vcamOverlayWindow = nil;
-static IMP vcamOriginalStartRunning = NULL;
-static IMP vcamOriginalStopRunning = NULL;
 
 static void VCamShowOverlay(void) {
     dispatch_async(dispatch_get_main_queue(), ^{
@@ -230,27 +271,16 @@ static void VCamHideOverlay(void) {
     });
 }
 
-static void VCamCaptureSessionStart(id session, SEL selector) {
-    ((void (*)(id, SEL))vcamOriginalStartRunning)(session, selector);
-    VCamShowOverlay();
-}
-
-static void VCamCaptureSessionStop(id session, SEL selector) {
-    ((void (*)(id, SEL))vcamOriginalStopRunning)(session, selector);
-    VCamHideOverlay();
-}
-
 __attribute__((constructor))
 static void VCamOverlayInitialize(void) {
     @autoreleasepool {
-        Class sessionClass = NSClassFromString(@"AVCaptureSession");
-        Method startMethod = class_getInstanceMethod(sessionClass, @selector(startRunning));
-        Method stopMethod = class_getInstanceMethod(sessionClass, @selector(stopRunning));
-        if (startMethod) {
-            vcamOriginalStartRunning = method_setImplementation(startMethod, (IMP)VCamCaptureSessionStart);
-        }
-        if (stopMethod) {
-            vcamOriginalStopRunning = method_setImplementation(stopMethod, (IMP)VCamCaptureSessionStop);
-        }
+        [[NSNotificationCenter defaultCenter] addObserverForName:AVCaptureSessionDidStartRunningNotification
+            object:nil queue:[NSOperationQueue mainQueue] usingBlock:^(NSNotification *note) {
+                VCamShowOverlay();
+            }];
+        [[NSNotificationCenter defaultCenter] addObserverForName:AVCaptureSessionDidStopRunningNotification
+            object:nil queue:[NSOperationQueue mainQueue] usingBlock:^(NSNotification *note) {
+                VCamHideOverlay();
+            }];
     }
 }
