@@ -26,19 +26,19 @@ static NSString *const VCamOverlayNotification = @"com.yourcompany.vcam.adjustme
     self.view.backgroundColor = [UIColor clearColor];
 
     self.floatingButton = [UIButton buttonWithType:UIButtonTypeSystem];
-    self.floatingButton.frame = CGRectMake(CGRectGetWidth(self.view.bounds) - 68.0,
-        CGRectGetHeight(self.view.bounds) * 0.42, 54.0, 54.0);
+    self.floatingButton.frame = CGRectMake(CGRectGetWidth(self.view.bounds) - 58.0,
+        CGRectGetHeight(self.view.bounds) * 0.42, 46.0, 46.0);
     self.floatingButton.autoresizingMask = UIViewAutoresizingFlexibleLeftMargin |
         UIViewAutoresizingFlexibleTopMargin | UIViewAutoresizingFlexibleBottomMargin;
     self.floatingButton.backgroundColor = [[UIColor systemBlueColor] colorWithAlphaComponent:0.92];
-    self.floatingButton.layer.cornerRadius = 27.0;
+    self.floatingButton.layer.cornerRadius = 23.0;
     self.floatingButton.layer.shadowColor = [UIColor blackColor].CGColor;
     self.floatingButton.layer.shadowOpacity = 0.35;
     self.floatingButton.layer.shadowRadius = 5.0;
     self.floatingButton.layer.shadowOffset = CGSizeMake(0, 2);
     [self.floatingButton setTitle:@"VC" forState:UIControlStateNormal];
     [self.floatingButton setTitleColor:[UIColor whiteColor] forState:UIControlStateNormal];
-    self.floatingButton.titleLabel.font = [UIFont boldSystemFontOfSize:16.0];
+    self.floatingButton.titleLabel.font = [UIFont boldSystemFontOfSize:14.0];
     [self.floatingButton addTarget:self action:@selector(togglePanel) forControlEvents:UIControlEventTouchUpInside];
     [self.floatingButton addGestureRecognizer:[[UIPanGestureRecognizer alloc]
         initWithTarget:self action:@selector(dragButton:)]];
@@ -48,90 +48,90 @@ static NSString *const VCamOverlayNotification = @"com.yourcompany.vcam.adjustme
 }
 
 - (void)buildPanel {
-    CGFloat width = MIN(310.0, CGRectGetWidth(self.view.bounds) - 28.0);
-    self.panel = [[UIView alloc] initWithFrame:CGRectMake(0, 0, width, 452.0)];
+    CGFloat width = MIN(276.0, CGRectGetWidth(self.view.bounds) - 24.0);
+    self.panel = [[UIView alloc] initWithFrame:CGRectMake(0, 0, width, 350.0)];
     self.panel.center = self.view.center;
     self.panel.autoresizingMask = UIViewAutoresizingFlexibleLeftMargin |
         UIViewAutoresizingFlexibleRightMargin | UIViewAutoresizingFlexibleTopMargin |
         UIViewAutoresizingFlexibleBottomMargin;
-    self.panel.backgroundColor = [[UIColor blackColor] colorWithAlphaComponent:0.86];
-    self.panel.layer.cornerRadius = 18.0;
+    self.panel.backgroundColor = [[UIColor blackColor] colorWithAlphaComponent:0.58];
+    self.panel.layer.cornerRadius = 15.0;
     self.panel.layer.borderWidth = 1.0;
     self.panel.layer.borderColor = [UIColor colorWithWhite:1 alpha:0.18].CGColor;
     self.panel.hidden = YES;
 
-    UILabel *title = [[UILabel alloc] initWithFrame:CGRectMake(18, 12, width - 72, 32)];
+    UILabel *title = [[UILabel alloc] initWithFrame:CGRectMake(14, 6, width - 60, 30)];
     title.text = @"Điều khiển VCam";
     title.textColor = [UIColor whiteColor];
-    title.font = [UIFont boldSystemFontOfSize:19.0];
+    title.font = [UIFont boldSystemFontOfSize:17.0];
     [self.panel addSubview:title];
 
     UIButton *close = [self smallButton:@"×" action:@selector(togglePanel)];
-    close.frame = CGRectMake(width - 50, 8, 40, 40);
+    close.frame = CGRectMake(width - 42, 4, 36, 34);
     [self.panel addSubview:close];
 
     CGFloat centerX = width / 2.0;
     UIButton *up = [self smallButton:@"↑" action:@selector(moveUp)];
-    up.frame = CGRectMake(centerX - 27, 52, 54, 48);
+    up.frame = CGRectMake(centerX - 22, 38, 44, 36);
     UIButton *left = [self smallButton:@"←" action:@selector(moveLeft)];
-    left.frame = CGRectMake(centerX - 88, 106, 54, 48);
+    left.frame = CGRectMake(centerX - 72, 78, 44, 36);
     UIButton *reset = [self smallButton:@"●" action:@selector(resetAdjustments)];
-    reset.frame = CGRectMake(centerX - 27, 106, 54, 48);
+    reset.frame = CGRectMake(centerX - 22, 78, 44, 36);
     UIButton *right = [self smallButton:@"→" action:@selector(moveRight)];
-    right.frame = CGRectMake(centerX + 34, 106, 54, 48);
+    right.frame = CGRectMake(centerX + 28, 78, 44, 36);
     UIButton *down = [self smallButton:@"↓" action:@selector(moveDown)];
-    down.frame = CGRectMake(centerX - 27, 160, 54, 48);
+    down.frame = CGRectMake(centerX - 22, 118, 44, 36);
     for (UIButton *button in @[up, left, reset, right, down]) [self.panel addSubview:button];
 
     UILabel *zoomLabel = [self panelLabel:@"Zoom"];
-    zoomLabel.frame = CGRectMake(16, 218, 72, 42);
+    zoomLabel.frame = CGRectMake(12, 160, 56, 32);
     [self.panel addSubview:zoomLabel];
     UIButton *zoomOut = [self wideButton:@"−" action:@selector(zoomOut)];
-    zoomOut.frame = CGRectMake(91, 218, 91, 42);
+    zoomOut.frame = CGRectMake(70, 160, 88, 32);
     UIButton *zoomIn = [self wideButton:@"＋" action:@selector(zoomIn)];
-    zoomIn.frame = CGRectMake(188, 218, width - 204, 42);
+    zoomIn.frame = CGRectMake(164, 160, width - 176, 32);
     [self.panel addSubview:zoomOut];
     [self.panel addSubview:zoomIn];
 
     UILabel *brightnessLabel = [self panelLabel:@"Độ sáng"];
-    brightnessLabel.frame = CGRectMake(16, 270, 72, 42);
+    brightnessLabel.frame = CGRectMake(12, 200, 56, 32);
     [self.panel addSubview:brightnessLabel];
     UIButton *darken = [self wideButton:@"−" action:@selector(darken)];
-    darken.frame = CGRectMake(91, 270, 91, 42);
+    darken.frame = CGRectMake(70, 200, 88, 32);
     UIButton *brighten = [self wideButton:@"＋" action:@selector(brighten)];
-    brighten.frame = CGRectMake(188, 270, width - 204, 42);
+    brighten.frame = CGRectMake(164, 200, width - 176, 32);
     [self.panel addSubview:darken];
     [self.panel addSubview:brighten];
 
     UILabel *rotationLabel = [self panelLabel:@"Xoay 360°"];
-    rotationLabel.frame = CGRectMake(16, 322, 72, 42);
+    rotationLabel.frame = CGRectMake(12, 240, 56, 32);
     [self.panel addSubview:rotationLabel];
     UIButton *rotateLeft = [self wideButton:@"↺ 15°" action:@selector(rotateLeft)];
-    rotateLeft.titleLabel.font = [UIFont boldSystemFontOfSize:15.0];
-    rotateLeft.frame = CGRectMake(91, 322, 91, 42);
+    rotateLeft.titleLabel.font = [UIFont boldSystemFontOfSize:14.0];
+    rotateLeft.frame = CGRectMake(70, 240, 88, 32);
     UIButton *rotateRight = [self wideButton:@"↻ 15°" action:@selector(rotateRight)];
-    rotateRight.titleLabel.font = [UIFont boldSystemFontOfSize:15.0];
-    rotateRight.frame = CGRectMake(188, 322, width - 204, 42);
+    rotateRight.titleLabel.font = [UIFont boldSystemFontOfSize:14.0];
+    rotateRight.frame = CGRectMake(164, 240, width - 176, 32);
     [self.panel addSubview:rotateLeft];
     [self.panel addSubview:rotateRight];
 
     UILabel *flipLabel = [self panelLabel:@"Lật"];
-    flipLabel.frame = CGRectMake(16, 374, 72, 42);
+    flipLabel.frame = CGRectMake(12, 280, 56, 32);
     [self.panel addSubview:flipLabel];
     UIButton *flipHorizontal = [self wideButton:@"↔ Ngang" action:@selector(flipHorizontal)];
-    flipHorizontal.titleLabel.font = [UIFont boldSystemFontOfSize:14.0];
-    flipHorizontal.frame = CGRectMake(91, 374, 91, 42);
+    flipHorizontal.titleLabel.font = [UIFont boldSystemFontOfSize:13.0];
+    flipHorizontal.frame = CGRectMake(70, 280, 88, 32);
     UIButton *flipVertical = [self wideButton:@"↕ Dọc" action:@selector(flipVertical)];
-    flipVertical.titleLabel.font = [UIFont boldSystemFontOfSize:14.0];
-    flipVertical.frame = CGRectMake(188, 374, width - 204, 42);
+    flipVertical.titleLabel.font = [UIFont boldSystemFontOfSize:13.0];
+    flipVertical.frame = CGRectMake(164, 280, width - 176, 32);
     [self.panel addSubview:flipHorizontal];
     [self.panel addSubview:flipVertical];
 
-    UILabel *hint = [[UILabel alloc] initWithFrame:CGRectMake(12, 424, width - 24, 20)];
+    UILabel *hint = [[UILabel alloc] initWithFrame:CGRectMake(12, 323, width - 24, 18)];
     hint.text = @"● đặt lại  •  kéo nút VC để di chuyển";
     hint.textAlignment = NSTextAlignmentCenter;
     hint.textColor = [UIColor colorWithWhite:1 alpha:0.65];
-    hint.font = [UIFont systemFontOfSize:12.0];
+    hint.font = [UIFont systemFontOfSize:10.5];
     [self.panel addSubview:hint];
     [self.view addSubview:self.panel];
 }
@@ -199,10 +199,10 @@ static NSString *const VCamOverlayNotification = @"com.yourcompany.vcam.adjustme
     [self save:preferences];
 }
 
-- (void)moveLeft { [self adjust:@"offsetX" delta:-0.04 minimum:-1.0 maximum:1.0]; }
-- (void)moveRight { [self adjust:@"offsetX" delta:0.04 minimum:-1.0 maximum:1.0]; }
-- (void)moveUp { [self adjust:@"offsetY" delta:0.04 minimum:-1.0 maximum:1.0]; }
-- (void)moveDown { [self adjust:@"offsetY" delta:-0.04 minimum:-1.0 maximum:1.0]; }
+- (void)moveLeft { [self adjust:@"offsetX" delta:0.04 minimum:-1.0 maximum:1.0]; }
+- (void)moveRight { [self adjust:@"offsetX" delta:-0.04 minimum:-1.0 maximum:1.0]; }
+- (void)moveUp { [self adjust:@"offsetY" delta:-0.04 minimum:-1.0 maximum:1.0]; }
+- (void)moveDown { [self adjust:@"offsetY" delta:0.04 minimum:-1.0 maximum:1.0]; }
 - (void)zoomIn { [self adjust:@"zoom" delta:0.1 minimum:0.5 maximum:3.0]; }
 - (void)zoomOut { [self adjust:@"zoom" delta:-0.1 minimum:0.5 maximum:3.0]; }
 - (void)brighten { [self adjust:@"brightness" delta:0.08 minimum:-1.0 maximum:1.0]; }

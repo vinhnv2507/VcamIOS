@@ -220,7 +220,7 @@ BOOL drawReplacementOntoBuffer(CVPixelBufferRef targetBuffer) {
         replacementCIImage = [CIImage imageWithCGImage:replacementImage];
     }
     else if (currentMode == VCamModeVideo && videoFramePaths.count > 0) {
-        if (!currentVideoImage || (videoOutputCounter % 3) == 0) {
+        if (!currentVideoImage || (videoOutputCounter % 5) == 0) {
             NSString *framePath = videoFramePaths[videoFrameIndex];
             CGImageSourceRef source = CGImageSourceCreateWithURL(
                 (__bridge CFURLRef)[NSURL fileURLWithPath:framePath], NULL);

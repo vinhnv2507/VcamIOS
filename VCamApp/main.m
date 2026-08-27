@@ -584,12 +584,8 @@ didFinishPickingMediaWithInfo:(NSDictionary<UIImagePickerControllerInfoKey, id> 
             return;
         }
 
-        NSInteger frameCount = MAX(1, MIN(300, (NSInteger)ceil(duration * 10.0)));
+        NSInteger frameCount = MAX(1, MIN(120, (NSInteger)ceil(duration * 6.0)));
         double interval = duration / (double)frameCount;
-        NSMutableArray<NSValue *> *times = [NSMutableArray arrayWithCapacity:(NSUInteger)frameCount];
-        for (NSInteger index = 0; index < frameCount; index++) {
-            [times addObject:[NSValue valueWithCMTime:CMTimeMakeWithSeconds(index * interval, 600)]];
-        }
 
         NSString *frameDirectory = VCamMediaFile(@"vcamframes");
         NSError *directoryError = nil;
@@ -605,21 +601,19 @@ didFinishPickingMediaWithInfo:(NSDictionary<UIImagePickerControllerInfoKey, id> 
         AVAssetImageGenerator *generator = [[AVAssetImageGenerator alloc] initWithAsset:asset];
         self.videoGenerator = generator;
         generator.appliesPreferredTrackTransform = YES;
-        generator.maximumSize = CGSizeMake(1280.0, 1280.0);
+        generator.maximumSize = CGSizeMake(960.0, 960.0);
         generator.requestedTimeToleranceBefore = CMTimeMakeWithSeconds(interval * 0.45, 600);
         generator.requestedTimeToleranceAfter = CMTimeMakeWithSeconds(interval * 0.45, 600);
 
-        NSObject *completionLock = [[NSObject alloc] init];
-        __block NSInteger completed = 0;
-        __block NSInteger saved = 0;
-        __block NSError *lastError = nil;
-        [generator generateCGImagesAsynchronouslyForTimes:times
-            completionHandler:^(CMTime requestedTime, CGImageRef image, CMTime actualTime,
-                                AVAssetImageGeneratorResult result, NSError *error) {
-                NSError *resultError = error;
-                if (result == AVAssetImageGeneratorSucceeded && image) {
-                    NSInteger index = MIN(frameCount - 1,
-                        MAX(0, (NSInteger)llround(CMTimeGetSeconds(requestedTime) / interval)));
+        NSInteger saved = 0;
+        NSError *lastError = nil;
+        for (NSInteger index = 0; index < frameCount; index++) {
+            @autoreleasepool {
+                CMTime requestedTime = CMTimeMakeWithSeconds(index * interval, 600);
+                NSError *frameError = nil;
+                CGImageRef image = [generator copyCGImageAtTime:requestedTime
+                    actualTime:NULL error:&frameError];
+                if (image) {
                     NSString *frameName = [NSString stringWithFormat:@"frame-%05ld.jpg", (long)index];
                     NSString *framePath = [frameDirectory stringByAppendingPathComponent:frameName];
                     NSData *jpeg = UIImageJPEGRepresentation([UIImage imageWithCGImage:image], 0.82);
@@ -627,31 +621,34 @@ didFinishPickingMediaWithInfo:(NSDictionary<UIImagePickerControllerInfoKey, id> 
                     if ([jpeg writeToFile:framePath options:0 error:&frameWriteError]) {
                         [[NSFileManager defaultManager] setAttributes:@{NSFilePosixPermissions: @0644,
                             NSFileProtectionKey: NSFileProtectionNone} ofItemAtPath:framePath error:nil];
-                        @synchronized (completionLock) { saved++; }
+                        saved++;
                     } else if (frameWriteError) {
-                        resultError = frameWriteError;
+                        lastError = frameWriteError;
                     }
+                    CGImageRelease(image);
+                } else if (frameError) {
+                    lastError = frameError;
                 }
 
-                BOOL finished = NO;
-                @synchronized (completionLock) {
-                    completed++;
-                    if (resultError) lastError = resultError;
-                    finished = completed >= frameCount;
+                if ((index % 6) == 0 || index == frameCount - 1) {
+                    NSInteger progress = (NSInteger)llround(((double)(index + 1) / (double)frameCount) * 100.0);
+                    dispatch_async(dispatch_get_main_queue(), ^{
+                        self.statusLabel.text = [NSString stringWithFormat:@"Đang chuẩn bị video… %ld%%", (long)progress];
+                    });
                 }
-                if (!finished) return;
+            }
+        }
 
-                dispatch_async(dispatch_get_main_queue(), ^{
-                    self.videoGenerator = nil;
-                    if (saved > 0) {
-                        [self applySelectedMediaAtPath:frameDirectory];
-                    } else {
-                        [[NSFileManager defaultManager] removeItemAtPath:frameDirectory error:nil];
-                        [self showMessage:lastError.localizedDescription ?: @"Không trích xuất được frame từ video."];
-                        [self reloadState];
-                    }
-                });
-            }];
+        dispatch_async(dispatch_get_main_queue(), ^{
+            self.videoGenerator = nil;
+            if (saved > 0) {
+                [self applySelectedMediaAtPath:frameDirectory];
+            } else {
+                [[NSFileManager defaultManager] removeItemAtPath:frameDirectory error:nil];
+                [self showMessage:lastError.localizedDescription ?: @"Không trích xuất được frame từ video."];
+                [self reloadState];
+            }
+        });
     });
 }
 
