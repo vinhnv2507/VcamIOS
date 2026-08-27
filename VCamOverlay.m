@@ -199,10 +199,10 @@ static NSString *const VCamOverlayNotification = @"com.yourcompany.vcam.adjustme
     [self save:preferences];
 }
 
-- (void)moveLeft { [self adjust:@"offsetX" delta:0.04 minimum:-1.0 maximum:1.0]; }
-- (void)moveRight { [self adjust:@"offsetX" delta:-0.04 minimum:-1.0 maximum:1.0]; }
-- (void)moveUp { [self adjust:@"offsetY" delta:-0.04 minimum:-1.0 maximum:1.0]; }
-- (void)moveDown { [self adjust:@"offsetY" delta:0.04 minimum:-1.0 maximum:1.0]; }
+- (void)moveLeft { [self adjust:@"offsetX" delta:-0.04 minimum:-1.0 maximum:1.0]; }
+- (void)moveRight { [self adjust:@"offsetX" delta:0.04 minimum:-1.0 maximum:1.0]; }
+- (void)moveUp { [self adjust:@"offsetY" delta:0.04 minimum:-1.0 maximum:1.0]; }
+- (void)moveDown { [self adjust:@"offsetY" delta:-0.04 minimum:-1.0 maximum:1.0]; }
 - (void)zoomIn { [self adjust:@"zoom" delta:0.1 minimum:0.5 maximum:3.0]; }
 - (void)zoomOut { [self adjust:@"zoom" delta:-0.1 minimum:0.5 maximum:3.0]; }
 - (void)brighten { [self adjust:@"brightness" delta:0.08 minimum:-1.0 maximum:1.0]; }

@@ -235,7 +235,9 @@ static NSString *const VCamMovieMediaType = @"public.movie";
         initWithPhotoLibrary:[PHPhotoLibrary sharedPhotoLibrary]];
     configuration.filter = [PHPickerFilter videosFilter];
     configuration.selectionLimit = 1;
-    configuration.preferredAssetRepresentationMode = PHPickerConfigurationAssetRepresentationModeCurrent;
+    // Ask Photos for an iOS-compatible representation (typically H.264) so
+    // the older A10 decoder does not have to open an unsupported source codec.
+    configuration.preferredAssetRepresentationMode = PHPickerConfigurationAssetRepresentationModeCompatible;
     PHPickerViewController *picker = [[PHPickerViewController alloc] initWithConfiguration:configuration];
     picker.delegate = self;
     [self presentViewController:picker animated:YES completion:nil];
@@ -271,6 +273,7 @@ static NSString *const VCamMovieMediaType = @"public.movie";
     }
 
     self.statusLabel.text = @"Đang nhập video…";
+    NSString *assetIdentifier = result.assetIdentifier;
     [provider loadFileRepresentationForTypeIdentifier:VCamMovieMediaType
         completionHandler:^(NSURL *url, NSError *fileError) {
             NSError *copyError = nil;
@@ -283,22 +286,37 @@ static NSString *const VCamMovieMediaType = @"public.movie";
                 return;
             }
 
-            // Some Photos providers deny access to their temporary MOV URL.
-            // Asking NSItemProvider for bytes uses its sandbox extension instead.
-            [provider loadDataRepresentationForTypeIdentifier:VCamMovieMediaType
-                completionHandler:^(NSData *data, NSError *dataError) {
-                    NSString *dataPath = VCamMediaFile(@"mov");
-                    NSError *writeError = nil;
-                    BOOL written = data.length > 0 && [data writeToFile:dataPath
-                        options:0 error:&writeError];
+            // Never request the whole movie as NSData: a large MOV can exceed
+            // the iPhone 7 memory limit and iOS kills VCam immediately. Prefer
+            // Photos' streaming resource API when the picker exposes an asset.
+            if (assetIdentifier.length > 0) {
+                PHFetchResult<PHAsset *> *assets = [PHAsset fetchAssetsWithLocalIdentifiers:
+                    @[assetIdentifier] options:nil];
+                PHAsset *asset = assets.firstObject;
+                if (asset) {
                     dispatch_async(dispatch_get_main_queue(), ^{
-                        if (written) {
-                            [self applySelectedMediaAtPath:dataPath];
+                        [self importVideoResourceForAsset:asset];
+                    });
+                    return;
+                }
+            }
+
+            // Last low-memory fallback: request an in-place URL and stream it
+            // to /private/var/tmp instead of materialising the movie in RAM.
+            [provider loadInPlaceFileRepresentationForTypeIdentifier:VCamMovieMediaType
+                completionHandler:^(NSURL *inPlaceURL, BOOL isInPlace, NSError *inPlaceError) {
+                    NSError *streamError = nil;
+                    NSString *streamedPath = nil;
+                    BOOL streamed = inPlaceURL && [self copyPickedVideoAtURL:inPlaceURL
+                        destination:&streamedPath error:&streamError];
+                    dispatch_async(dispatch_get_main_queue(), ^{
+                        if (streamed) {
+                            [self applySelectedMediaAtPath:streamedPath];
                         } else {
-                            NSError *finalError = dataError ?: writeError ?: copyError ?: fileError;
+                            NSError *finalError = streamError ?: inPlaceError ?: copyError ?: fileError;
                             NSString *detail = finalError ? [NSString stringWithFormat:@"%@ (%@/%ld)",
                                 finalError.localizedDescription, finalError.domain, (long)finalError.code]
-                                : @"Photos không trả về dữ liệu video.";
+                                : @"Photos không cấp quyền đọc video.";
                             [self showMessage:detail];
                             [self reloadState];
                         }
@@ -393,6 +411,7 @@ didFinishPickingMediaWithInfo:(NSDictionary<UIImagePickerControllerInfoKey, id> 
 
     uint8_t buffer[64 * 1024];
     BOOL copied = YES;
+    unsigned long long totalBytes = 0;
     while (copied) {
         NSInteger bytesRead = [input read:buffer maxLength:sizeof(buffer)];
         if (bytesRead == 0) break;
@@ -408,16 +427,19 @@ didFinishPickingMediaWithInfo:(NSDictionary<UIImagePickerControllerInfoKey, id> 
                 break;
             }
             offset += bytesWritten;
+            totalBytes += (unsigned long long)bytesWritten;
         }
     }
     NSError *streamError = input.streamError ?: output.streamError;
     [input close];
     [output close];
     if (scoped) [sourceURL stopAccessingSecurityScopedResource];
-    if (!copied) {
+    if (!copied || totalBytes == 0) {
         [manager removeItemAtPath:finalPath error:nil];
         if (error) *error = streamError ?: [NSError errorWithDomain:@"VCamVideoImport"
-            code:1 userInfo:@{NSLocalizedDescriptionKey: @"Không thể đọc hoặc ghi dữ liệu video đã chọn."}];
+            code:1 userInfo:@{NSLocalizedDescriptionKey: totalBytes == 0
+                ? @"Photos trả về file video rỗng hoặc không cho phép đọc."
+                : @"Không thể đọc hoặc ghi dữ liệu video đã chọn."}];
         return NO;
     }
 
@@ -603,6 +625,7 @@ didFinishPickingMediaWithInfo:(NSDictionary<UIImagePickerControllerInfoKey, id> 
             return;
         }
 
+        @try {
         AVAssetTrack *track = tracks.firstObject;
         CGSize naturalSize = track.naturalSize;
         CGAffineTransform preferredTransform = track.preferredTransform;
@@ -721,6 +744,17 @@ didFinishPickingMediaWithInfo:(NSDictionary<UIImagePickerControllerInfoKey, id> 
                 [self reloadState];
             }
         });
+        } @catch (NSException *exception) {
+            [self.videoReader cancelReading];
+            [[NSFileManager defaultManager] removeItemAtPath:frameDirectory error:nil];
+            dispatch_async(dispatch_get_main_queue(), ^{
+                self.videoReader = nil;
+                NSString *detail = [NSString stringWithFormat:@"%@ (%@)",
+                    exception.reason ?: @"Không thể giải mã video.", exception.name];
+                [self showMessage:detail];
+                [self reloadState];
+            });
+        }
     });
 }
 
