@@ -19,6 +19,10 @@ NSString *VCamStatusFile(void) {
     return [VCamSharedDirectory() stringByAppendingPathComponent:@"com.yourcompany.vcam.status.plist"];
 }
 
+NSString *VCamAdjustmentsFile(void) {
+    return [VCamSharedDirectory() stringByAppendingPathComponent:@"com.yourcompany.vcam.adjustments.plist"];
+}
+
 NSString *VCamMediaFile(NSString *extension) {
     NSString *name = [NSString stringWithFormat:@"media-%@.%@",
         [[NSUUID UUID] UUIDString], extension.length ? extension : @"dat"];

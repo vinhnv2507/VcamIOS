@@ -1,6 +1,5 @@
 #import <UIKit/UIKit.h>
 #import <CoreFoundation/CoreFoundation.h>
-#import <AVFoundation/AVFoundation.h>
 #import "VCamPaths.h"
 
 static NSString *const VCamOverlayNotification = @"com.yourcompany.vcam.adjustments.changed";
@@ -180,14 +179,14 @@ static NSString *const VCamOverlayNotification = @"com.yourcompany.vcam.adjustme
 }
 
 - (NSMutableDictionary *)preferences {
-    NSDictionary *stored = [NSDictionary dictionaryWithContentsOfFile:VCamPreferencesFile()];
+    NSDictionary *stored = [NSDictionary dictionaryWithContentsOfFile:VCamAdjustmentsFile()];
     return stored ? [stored mutableCopy] : [NSMutableDictionary dictionary];
 }
 
 - (void)save:(NSMutableDictionary *)preferences {
-    [preferences writeToFile:VCamPreferencesFile() atomically:YES];
+    [preferences writeToFile:VCamAdjustmentsFile() atomically:YES];
     [[NSFileManager defaultManager] setAttributes:@{NSFilePosixPermissions: @0666}
-        ofItemAtPath:VCamPreferencesFile() error:nil];
+        ofItemAtPath:VCamAdjustmentsFile() error:nil];
     CFNotificationCenterPostNotification(CFNotificationCenterGetDarwinNotifyCenter(),
         (__bridge CFStringRef)VCamOverlayNotification, NULL, NULL, YES);
 }
@@ -265,22 +264,9 @@ static void VCamShowOverlay(void) {
     });
 }
 
-static void VCamHideOverlay(void) {
-    dispatch_async(dispatch_get_main_queue(), ^{
-        vcamOverlayWindow.hidden = YES;
-    });
-}
-
 __attribute__((constructor))
 static void VCamOverlayInitialize(void) {
     @autoreleasepool {
-        [[NSNotificationCenter defaultCenter] addObserverForName:AVCaptureSessionDidStartRunningNotification
-            object:nil queue:[NSOperationQueue mainQueue] usingBlock:^(NSNotification *note) {
-                VCamShowOverlay();
-            }];
-        [[NSNotificationCenter defaultCenter] addObserverForName:AVCaptureSessionDidStopRunningNotification
-            object:nil queue:[NSOperationQueue mainQueue] usingBlock:^(NSNotification *note) {
-                VCamHideOverlay();
-            }];
+        VCamShowOverlay();
     }
 }

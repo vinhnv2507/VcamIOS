@@ -27,10 +27,10 @@ typedef NS_ENUM(NSInteger, VCamMode) {
 // ---- State (all guarded by vcamLock) ----
 static VCamMode currentMode = VCamModeNone;
 static CGImageRef replacementImage = NULL;
-static AVURLAsset *videoAsset = nil;
-static AVAssetReader *videoReader = nil;
-static AVAssetReaderTrackOutput *videoOutput = nil;
-static CGAffineTransform videoPreferredTransform;
+static NSArray<NSString *> *videoFramePaths = nil;
+static CGImageRef currentVideoImage = NULL;
+static NSUInteger videoFrameIndex = 0;
+static NSUInteger videoOutputCounter = 0;
 static CIContext *sharedCIContext = NULL;
 static NSLock *vcamLock = NULL;
 
@@ -52,7 +52,7 @@ static BOOL cachedFlipHorizontal = NO;
 static BOOL cachedFlipVertical = NO;
 
 static void readAdjustmentPreferences(void) {
-    NSDictionary *prefs = [NSDictionary dictionaryWithContentsOfFile:VCamPreferencesFile()];
+    NSDictionary *prefs = [NSDictionary dictionaryWithContentsOfFile:VCamAdjustmentsFile()];
     cachedOffsetX = MAX(-1.0, MIN(1.0, [prefs[kVCamOffsetXKey] doubleValue]));
     cachedOffsetY = MAX(-1.0, MIN(1.0, [prefs[kVCamOffsetYKey] doubleValue]));
     double zoom = [prefs[kVCamZoomKey] doubleValue];
@@ -94,11 +94,13 @@ static void freeMedia(void) {
         CGImageRelease(replacementImage);
         replacementImage = NULL;
     }
-    [videoReader cancelReading];
-    videoOutput = nil;
-    videoReader = nil;
-    videoAsset = nil;
-    videoPreferredTransform = CGAffineTransformIdentity;
+    if (currentVideoImage) {
+        CGImageRelease(currentVideoImage);
+        currentVideoImage = NULL;
+    }
+    videoFramePaths = nil;
+    videoFrameIndex = 0;
+    videoOutputCounter = 0;
     currentMode = VCamModeNone;
 }
 
@@ -124,38 +126,19 @@ static BOOL loadImageMedia(NSString *path) {
     return NO;
 }
 
-/// Creates a streaming reader. Only the current decoded frame is held in RAM.
-/// Must be called with vcamLock held.
-static BOOL startVideoReader(void) {
-    if (!videoAsset) return NO;
-    NSArray *tracks = [videoAsset tracksWithMediaType:AVMediaTypeVideo];
-    if (tracks.count == 0) return NO;
-    AVAssetTrack *videoTrack = tracks[0];
-
-    NSError *error = nil;
-    AVAssetReader *reader = [[AVAssetReader alloc] initWithAsset:videoAsset error:&error];
-    if (!reader || error) return NO;
-    NSDictionary *settings = @{
-        (NSString *)kCVPixelBufferPixelFormatTypeKey: @(kCVPixelFormatType_32BGRA),
-        (NSString *)kCVPixelBufferIOSurfacePropertiesKey: @{}
-    };
-    AVAssetReaderTrackOutput *output = [[AVAssetReaderTrackOutput alloc]
-        initWithTrack:videoTrack outputSettings:settings];
-    output.alwaysCopiesSampleData = NO;
-    if (![reader canAddOutput:output]) return NO;
-    [reader addOutput:output];
-    if (![reader startReading]) return NO;
-    videoReader = reader;
-    videoOutput = output;
-    return YES;
-}
-
 static BOOL loadVideoMedia(NSString *path) {
-    videoAsset = [AVURLAsset assetWithURL:[NSURL fileURLWithPath:path]];
-    NSArray *tracks = [videoAsset tracksWithMediaType:AVMediaTypeVideo];
-    if (tracks.count == 0) { videoAsset = nil; return NO; }
-    videoPreferredTransform = ((AVAssetTrack *)tracks[0]).preferredTransform;
-    if (!startVideoReader()) { videoAsset = nil; return NO; }
+    BOOL isDirectory = NO;
+    if (![[NSFileManager defaultManager] fileExistsAtPath:path isDirectory:&isDirectory] || !isDirectory) return NO;
+    NSArray<NSString *> *files = [[NSFileManager defaultManager] contentsOfDirectoryAtPath:path error:nil];
+    NSPredicate *jpegPredicate = [NSPredicate predicateWithBlock:^BOOL(NSString *file, NSDictionary *bindings) {
+        NSString *ext = file.pathExtension.lowercaseString;
+        return [ext isEqualToString:@"jpg"] || [ext isEqualToString:@"jpeg"];
+    }];
+    files = [[files filteredArrayUsingPredicate:jpegPredicate] sortedArrayUsingSelector:@selector(compare:)];
+    if (files.count == 0) return NO;
+    NSMutableArray<NSString *> *paths = [NSMutableArray arrayWithCapacity:files.count];
+    for (NSString *file in files) [paths addObject:[path stringByAppendingPathComponent:file]];
+    videoFramePaths = [paths copy];
     currentMode = VCamModeVideo;
     return YES;
 }
@@ -194,7 +177,7 @@ void loadReplacementMedia(void) {
     if ([ext isEqualToString:@"png"] || [ext isEqualToString:@"jpg"] || [ext isEqualToString:@"jpeg"]) {
         loaded = loadImageMedia(cachedMediaPath);
     }
-    else if ([ext isEqualToString:@"mp4"] || [ext isEqualToString:@"mov"] || [ext isEqualToString:@"m4v"]) {
+    else if ([ext isEqualToString:@"vcamframes"]) {
         loaded = loadVideoMedia(cachedMediaPath);
     }
 
@@ -232,29 +215,28 @@ BOOL drawReplacementOntoBuffer(CVPixelBufferRef targetBuffer) {
     ensureVCamLock();
     [vcamLock lock];
 
-    CMSampleBufferRef activeVideoSample = NULL;
     CIImage *replacementCIImage = nil;
     if (currentMode == VCamModeImage && replacementImage) {
         replacementCIImage = [CIImage imageWithCGImage:replacementImage];
     }
-    else if (currentMode == VCamModeVideo && videoOutput) {
-        activeVideoSample = [videoOutput copyNextSampleBuffer];
-        if (!activeVideoSample) {
-            // End of file: create a fresh reader and loop from the first frame.
-            [videoReader cancelReading];
-            videoReader = nil;
-            videoOutput = nil;
-            if (startVideoReader()) activeVideoSample = [videoOutput copyNextSampleBuffer];
+    else if (currentMode == VCamModeVideo && videoFramePaths.count > 0) {
+        if (!currentVideoImage || (videoOutputCounter % 3) == 0) {
+            NSString *framePath = videoFramePaths[videoFrameIndex];
+            CGImageSourceRef source = CGImageSourceCreateWithURL(
+                (__bridge CFURLRef)[NSURL fileURLWithPath:framePath], NULL);
+            CGImageRef nextImage = source ? CGImageSourceCreateImageAtIndex(source, 0, NULL) : NULL;
+            if (source) CFRelease(source);
+            if (nextImage) {
+                if (currentVideoImage) CGImageRelease(currentVideoImage);
+                currentVideoImage = nextImage;
+                videoFrameIndex = (videoFrameIndex + 1) % videoFramePaths.count;
+            }
         }
-        CVPixelBufferRef frame = activeVideoSample ? CMSampleBufferGetImageBuffer(activeVideoSample) : NULL;
-        if (frame) {
-            replacementCIImage = [CIImage imageWithCVPixelBuffer:frame];
-            replacementCIImage = [replacementCIImage imageByApplyingTransform:videoPreferredTransform];
-        }
+        videoOutputCounter++;
+        if (currentVideoImage) replacementCIImage = [CIImage imageWithCGImage:currentVideoImage];
     }
 
     if (!replacementCIImage || !sharedCIContext) {
-        if (activeVideoSample) CFRelease(activeVideoSample);
         [vcamLock unlock];
         return NO;
     }
@@ -266,7 +248,6 @@ BOOL drawReplacementOntoBuffer(CVPixelBufferRef targetBuffer) {
 
     CGRect extent = replacementCIImage.extent;
     if (extent.size.width <= 0 || extent.size.height <= 0) {
-        if (activeVideoSample) CFRelease(activeVideoSample);
         [vcamLock unlock];
         return NO;
     }
@@ -312,7 +293,6 @@ BOOL drawReplacementOntoBuffer(CVPixelBufferRef targetBuffer) {
                  colorSpace:colorSpace];
     CGColorSpaceRelease(colorSpace);
 
-    if (activeVideoSample) CFRelease(activeVideoSample);
     [vcamLock unlock];
     return YES;
 }

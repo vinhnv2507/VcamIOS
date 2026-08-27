@@ -4,6 +4,7 @@
 #import <PhotosUI/PhotosUI.h>
 #import <AVFoundation/AVFoundation.h>
 #import "../VCamPaths.h"
+#include <math.h>
 
 #define VCamPreferencesPath VCamPreferencesFile()
 #define VCamStatusPath VCamStatusFile()
@@ -16,8 +17,10 @@ static NSString *const VCamMovieMediaType = @"public.movie";
 @property(nonatomic, strong) UILabel *statusLabel;
 @property(nonatomic, strong) UILabel *daemonStatusLabel;
 @property(nonatomic, strong) UIImageView *previewView;
+@property(nonatomic, strong) AVAssetImageGenerator *videoGenerator;
 - (BOOL)prepareSharedStorage:(NSError **)error;
 - (void)applySelectedMediaAtPath:(NSString *)path;
+- (void)prepareVideoFramesAtPath:(NSString *)path;
 - (void)importVideoResourceForAsset:(PHAsset *)asset;
 - (BOOL)copyPickedVideoAtURL:(NSURL *)sourceURL destination:(NSString **)destination error:(NSError **)error;
 @end
@@ -544,8 +547,16 @@ didFinishPickingMediaWithInfo:(NSDictionary<UIImagePickerControllerInfoKey, id> 
 }
 
 - (void)applySelectedMediaAtPath:(NSString *)destination {
+    NSString *extension = destination.pathExtension.lowercaseString;
+    if ([@[@"mov", @"mp4", @"m4v"] containsObject:extension]) {
+        [self prepareVideoFramesAtPath:destination];
+        return;
+    }
+
+    BOOL isDirectory = NO;
+    [[NSFileManager defaultManager] fileExistsAtPath:destination isDirectory:&isDirectory];
     [[NSFileManager defaultManager] setAttributes:@{
-        NSFilePosixPermissions: @0666,
+        NSFilePosixPermissions: isDirectory ? @0755 : @0666,
         NSFileProtectionKey: NSFileProtectionNone
     } ofItemAtPath:destination error:nil];
     [self removeOldMediaExcept:destination];
@@ -557,6 +568,91 @@ didFinishPickingMediaWithInfo:(NSDictionary<UIImagePickerControllerInfoKey, id> 
     self.enabledSwitch.on = YES;
     [self reloadState];
     [self showMessage:@"Đã áp dụng. Hãy mở ứng dụng Camera để kiểm tra."];
+}
+
+- (void)prepareVideoFramesAtPath:(NSString *)path {
+    [self.videoGenerator cancelAllCGImageGeneration];
+    self.statusLabel.text = @"Đang chuẩn bị video an toàn cho Camera…";
+    dispatch_async(dispatch_get_global_queue(QOS_CLASS_USER_INITIATED, 0), ^{
+        AVURLAsset *asset = [AVURLAsset assetWithURL:[NSURL fileURLWithPath:path]];
+        double duration = CMTimeGetSeconds(asset.duration);
+        if (!isfinite(duration) || duration <= 0.0 || [asset tracksWithMediaType:AVMediaTypeVideo].count == 0) {
+            dispatch_async(dispatch_get_main_queue(), ^{
+                [self showMessage:@"Video không có track hình ảnh hợp lệ."];
+                [self reloadState];
+            });
+            return;
+        }
+
+        NSInteger frameCount = MAX(1, MIN(300, (NSInteger)ceil(duration * 10.0)));
+        double interval = duration / (double)frameCount;
+        NSMutableArray<NSValue *> *times = [NSMutableArray arrayWithCapacity:(NSUInteger)frameCount];
+        for (NSInteger index = 0; index < frameCount; index++) {
+            [times addObject:[NSValue valueWithCMTime:CMTimeMakeWithSeconds(index * interval, 600)]];
+        }
+
+        NSString *frameDirectory = VCamMediaFile(@"vcamframes");
+        NSError *directoryError = nil;
+        if (![[NSFileManager defaultManager] createDirectoryAtPath:frameDirectory
+            withIntermediateDirectories:NO attributes:@{NSFilePosixPermissions: @0755}
+            error:&directoryError]) {
+            dispatch_async(dispatch_get_main_queue(), ^{
+                [self showMessage:directoryError.localizedDescription ?: @"Không tạo được thư mục frame video."];
+            });
+            return;
+        }
+
+        AVAssetImageGenerator *generator = [[AVAssetImageGenerator alloc] initWithAsset:asset];
+        self.videoGenerator = generator;
+        generator.appliesPreferredTrackTransform = YES;
+        generator.maximumSize = CGSizeMake(1280.0, 1280.0);
+        generator.requestedTimeToleranceBefore = CMTimeMakeWithSeconds(interval * 0.45, 600);
+        generator.requestedTimeToleranceAfter = CMTimeMakeWithSeconds(interval * 0.45, 600);
+
+        NSObject *completionLock = [[NSObject alloc] init];
+        __block NSInteger completed = 0;
+        __block NSInteger saved = 0;
+        __block NSError *lastError = nil;
+        [generator generateCGImagesAsynchronouslyForTimes:times
+            completionHandler:^(CMTime requestedTime, CGImageRef image, CMTime actualTime,
+                                AVAssetImageGeneratorResult result, NSError *error) {
+                NSError *resultError = error;
+                if (result == AVAssetImageGeneratorSucceeded && image) {
+                    NSInteger index = MIN(frameCount - 1,
+                        MAX(0, (NSInteger)llround(CMTimeGetSeconds(requestedTime) / interval)));
+                    NSString *frameName = [NSString stringWithFormat:@"frame-%05ld.jpg", (long)index];
+                    NSString *framePath = [frameDirectory stringByAppendingPathComponent:frameName];
+                    NSData *jpeg = UIImageJPEGRepresentation([UIImage imageWithCGImage:image], 0.82);
+                    NSError *frameWriteError = nil;
+                    if ([jpeg writeToFile:framePath options:0 error:&frameWriteError]) {
+                        [[NSFileManager defaultManager] setAttributes:@{NSFilePosixPermissions: @0644,
+                            NSFileProtectionKey: NSFileProtectionNone} ofItemAtPath:framePath error:nil];
+                        @synchronized (completionLock) { saved++; }
+                    } else if (frameWriteError) {
+                        resultError = frameWriteError;
+                    }
+                }
+
+                BOOL finished = NO;
+                @synchronized (completionLock) {
+                    completed++;
+                    if (resultError) lastError = resultError;
+                    finished = completed >= frameCount;
+                }
+                if (!finished) return;
+
+                dispatch_async(dispatch_get_main_queue(), ^{
+                    self.videoGenerator = nil;
+                    if (saved > 0) {
+                        [self applySelectedMediaAtPath:frameDirectory];
+                    } else {
+                        [[NSFileManager defaultManager] removeItemAtPath:frameDirectory error:nil];
+                        [self showMessage:lastError.localizedDescription ?: @"Không trích xuất được frame từ video."];
+                        [self reloadState];
+                    }
+                });
+            }];
+    });
 }
 
 - (void)removeOldMediaExcept:(NSString *)keptPath {

@@ -4,4 +4,5 @@ FOUNDATION_EXPORT BOOL VCamIsRootless(void);
 FOUNDATION_EXPORT NSString *VCamSharedDirectory(void);
 FOUNDATION_EXPORT NSString *VCamPreferencesFile(void);
 FOUNDATION_EXPORT NSString *VCamStatusFile(void);
+FOUNDATION_EXPORT NSString *VCamAdjustmentsFile(void);
 FOUNDATION_EXPORT NSString *VCamMediaFile(NSString *extension);
