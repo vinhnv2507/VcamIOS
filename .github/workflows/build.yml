@@ -43,7 +43,8 @@ jobs:
           roothide_theos="$RUNNER_TEMP/theos-roothide"
           git clone --depth 1 --recursive https://github.com/roothide/theos.git "$roothide_theos"
           # Reuse the iOS SDK downloaded by the Theos action.
-          cp -a "$standard_theos/sdks" "$roothide_theos/"
+          mkdir -p "$roothide_theos/sdks"
+          cp -a "$standard_theos/sdks/." "$roothide_theos/sdks/"
           mkdir -p "$roothide_theos/vendor/include" "$roothide_theos/vendor/lib"
           curl -L --fail --retry 3 https://github.com/RootHide/libroothide/files/12643716/devkit.zip -o "$RUNNER_TEMP/roothide-devkit.zip"
           unzip -q "$RUNNER_TEMP/roothide-devkit.zip" -d "$RUNNER_TEMP/roothide-devkit"
