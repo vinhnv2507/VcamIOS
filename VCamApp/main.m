@@ -1,7 +1,6 @@
 #import <UIKit/UIKit.h>
 #import <CoreFoundation/CoreFoundation.h>
 #import <Photos/Photos.h>
-#import <PhotosUI/PhotosUI.h>
 #import <AVFoundation/AVFoundation.h>
 #import <CoreImage/CoreImage.h>
 #import "../VCamPaths.h"
@@ -13,7 +12,7 @@ static NSString *const VCamNotificationName = @"com.yourcompany.vcam.prefs.chang
 static NSString *const VCamImageMediaType = @"public.image";
 static NSString *const VCamMovieMediaType = @"public.movie";
 
-@interface VCamViewController : UIViewController <UIImagePickerControllerDelegate, UINavigationControllerDelegate, PHPickerViewControllerDelegate>
+@interface VCamViewController : UIViewController <UIImagePickerControllerDelegate, UINavigationControllerDelegate>
 @property(nonatomic, strong) UISwitch *enabledSwitch;
 @property(nonatomic, strong) UILabel *statusLabel;
 @property(nonatomic, strong) UILabel *daemonStatusLabel;
@@ -226,21 +225,10 @@ static NSString *const VCamMovieMediaType = @"public.movie";
 }
 
 - (void)selectVideo {
-    NSError *storageError = nil;
-    if (![self prepareSharedStorage:&storageError]) {
-        [self showMessage:storageError.localizedDescription ?: @"Không thể mở bộ nhớ dùng chung của VCam."];
-        return;
-    }
-    PHPickerConfiguration *configuration = [[PHPickerConfiguration alloc]
-        initWithPhotoLibrary:[PHPhotoLibrary sharedPhotoLibrary]];
-    configuration.filter = [PHPickerFilter videosFilter];
-    configuration.selectionLimit = 1;
-    // Ask Photos for an iOS-compatible representation (typically H.264) so
-    // the older A10 decoder does not have to open an unsupported source codec.
-    configuration.preferredAssetRepresentationMode = PHPickerConfigurationAssetRepresentationModeCompatible;
-    PHPickerViewController *picker = [[PHPickerViewController alloc] initWithConfiguration:configuration];
-    picker.delegate = self;
-    [self presentViewController:picker animated:YES completion:nil];
+    // PHPicker's NSItemProvider service is unstable for movies on some
+    // jailbroken iOS 15 installations. UIImagePicker is already reliable for
+    // images on this device and gives us a local, streamable movie URL.
+    [self presentPickerForMediaType:VCamMovieMediaType];
 }
 
 - (void)presentPickerForMediaType:(NSString *)mediaType {
@@ -256,73 +244,12 @@ static NSString *const VCamMovieMediaType = @"public.movie";
     UIImagePickerController *picker = [[UIImagePickerController alloc] init];
     picker.sourceType = UIImagePickerControllerSourceTypePhotoLibrary;
     picker.mediaTypes = @[mediaType];
-    picker.videoQuality = UIImagePickerControllerQualityTypeHigh;
+    if ([mediaType isEqualToString:VCamMovieMediaType]) {
+        picker.videoQuality = UIImagePickerControllerQualityTypeMedium;
+        picker.videoExportPreset = AVAssetExportPresetMediumQuality;
+    }
     picker.delegate = self;
     [self presentViewController:picker animated:YES completion:nil];
-}
-
-- (void)picker:(PHPickerViewController *)picker didFinishPicking:(NSArray<PHPickerResult *> *)results {
-    [picker dismissViewControllerAnimated:YES completion:nil];
-    PHPickerResult *result = results.firstObject;
-    if (!result) return;
-
-    NSItemProvider *provider = result.itemProvider;
-    if (![provider hasItemConformingToTypeIdentifier:VCamMovieMediaType]) {
-        [self showMessage:@"Video đã chọn không có định dạng mà VCam có thể đọc."];
-        return;
-    }
-
-    self.statusLabel.text = @"Đang nhập video…";
-    NSString *assetIdentifier = result.assetIdentifier;
-    [provider loadFileRepresentationForTypeIdentifier:VCamMovieMediaType
-        completionHandler:^(NSURL *url, NSError *fileError) {
-            NSError *copyError = nil;
-            NSString *destination = nil;
-            BOOL copied = url && [self copyPickedVideoAtURL:url destination:&destination error:&copyError];
-            if (copied) {
-                dispatch_async(dispatch_get_main_queue(), ^{
-                    [self applySelectedMediaAtPath:destination];
-                });
-                return;
-            }
-
-            // Never request the whole movie as NSData: a large MOV can exceed
-            // the iPhone 7 memory limit and iOS kills VCam immediately. Prefer
-            // Photos' streaming resource API when the picker exposes an asset.
-            if (assetIdentifier.length > 0) {
-                PHFetchResult<PHAsset *> *assets = [PHAsset fetchAssetsWithLocalIdentifiers:
-                    @[assetIdentifier] options:nil];
-                PHAsset *asset = assets.firstObject;
-                if (asset) {
-                    dispatch_async(dispatch_get_main_queue(), ^{
-                        [self importVideoResourceForAsset:asset];
-                    });
-                    return;
-                }
-            }
-
-            // Last low-memory fallback: request an in-place URL and stream it
-            // to /private/var/tmp instead of materialising the movie in RAM.
-            [provider loadInPlaceFileRepresentationForTypeIdentifier:VCamMovieMediaType
-                completionHandler:^(NSURL *inPlaceURL, BOOL isInPlace, NSError *inPlaceError) {
-                    NSError *streamError = nil;
-                    NSString *streamedPath = nil;
-                    BOOL streamed = inPlaceURL && [self copyPickedVideoAtURL:inPlaceURL
-                        destination:&streamedPath error:&streamError];
-                    dispatch_async(dispatch_get_main_queue(), ^{
-                        if (streamed) {
-                            [self applySelectedMediaAtPath:streamedPath];
-                        } else {
-                            NSError *finalError = streamError ?: inPlaceError ?: copyError ?: fileError;
-                            NSString *detail = finalError ? [NSString stringWithFormat:@"%@ (%@/%ld)",
-                                finalError.localizedDescription, finalError.domain, (long)finalError.code]
-                                : @"Photos không cấp quyền đọc video.";
-                            [self showMessage:detail];
-                            [self reloadState];
-                        }
-                    });
-                }];
-        }];
 }
 
 - (void)imagePickerControllerDidCancel:(UIImagePickerController *)picker {
@@ -627,32 +554,7 @@ didFinishPickingMediaWithInfo:(NSDictionary<UIImagePickerControllerInfoKey, id> 
 
         @try {
         AVAssetTrack *track = tracks.firstObject;
-        CGSize naturalSize = track.naturalSize;
         CGAffineTransform preferredTransform = track.preferredTransform;
-        CGRect sourceRect = CGRectMake(0, 0, naturalSize.width, naturalSize.height);
-        CGRect orientedRect = CGRectApplyAffineTransform(sourceRect, preferredTransform);
-        CGFloat orientedWidth = fabs(CGRectGetWidth(orientedRect));
-        CGFloat orientedHeight = fabs(CGRectGetHeight(orientedRect));
-        CGFloat largestSide = MAX(orientedWidth, orientedHeight);
-        CGFloat outputScale = largestSide > 960.0 ? 960.0 / largestSide : 1.0;
-
-        CGAffineTransform normalizedTransform = CGAffineTransformConcat(preferredTransform,
-            CGAffineTransformMakeTranslation(-CGRectGetMinX(orientedRect), -CGRectGetMinY(orientedRect)));
-        normalizedTransform = CGAffineTransformConcat(normalizedTransform,
-            CGAffineTransformMakeScale(outputScale, outputScale));
-
-        AVMutableVideoComposition *composition = [AVMutableVideoComposition videoComposition];
-        composition.frameDuration = CMTimeMake(1, 6);
-        composition.renderSize = CGSizeMake(MAX(2.0, floor(orientedWidth * outputScale)),
-                                             MAX(2.0, floor(orientedHeight * outputScale)));
-        AVMutableVideoCompositionInstruction *instruction =
-            [AVMutableVideoCompositionInstruction videoCompositionInstruction];
-        instruction.timeRange = CMTimeRangeMake(kCMTimeZero, asset.duration);
-        AVMutableVideoCompositionLayerInstruction *layerInstruction =
-            [AVMutableVideoCompositionLayerInstruction videoCompositionLayerInstructionWithAssetTrack:track];
-        [layerInstruction setTransform:normalizedTransform atTime:kCMTimeZero];
-        instruction.layerInstructions = @[layerInstruction];
-        composition.instructions = @[instruction];
 
         NSError *readerError = nil;
         AVAssetReader *reader = [[AVAssetReader alloc] initWithAsset:asset error:&readerError];
@@ -660,9 +562,8 @@ didFinishPickingMediaWithInfo:(NSDictionary<UIImagePickerControllerInfoKey, id> 
             (NSString *)kCVPixelBufferPixelFormatTypeKey: @(kCVPixelFormatType_32BGRA),
             (NSString *)kCVPixelBufferIOSurfacePropertiesKey: @{}
         };
-        AVAssetReaderVideoCompositionOutput *output = [[AVAssetReaderVideoCompositionOutput alloc]
-            initWithVideoTracks:@[track] videoSettings:outputSettings];
-        output.videoComposition = composition;
+        AVAssetReaderTrackOutput *output = [[AVAssetReaderTrackOutput alloc]
+            initWithTrack:track outputSettings:outputSettings];
         output.alwaysCopiesSampleData = NO;
         if (!reader || ![reader canAddOutput:output]) {
             [[NSFileManager defaultManager] removeItemAtPath:frameDirectory error:nil];
@@ -695,14 +596,37 @@ didFinishPickingMediaWithInfo:(NSDictionary<UIImagePickerControllerInfoKey, id> 
         NSInteger saved = 0;
         NSError *lastError = nil;
         CIContext *imageContext = [CIContext contextWithOptions:nil];
+        double firstSampleSecond = NAN;
+        double nextFrameSecond = 0.0;
         while (saved < frameCount) {
             @autoreleasepool {
                 CMSampleBufferRef sample = [output copyNextSampleBuffer];
                 if (!sample) break;
+                double sampleSecond = CMTimeGetSeconds(CMSampleBufferGetPresentationTimeStamp(sample));
+                if (!isfinite(sampleSecond)) sampleSecond = 0.0;
+                if (!isfinite(firstSampleSecond)) firstSampleSecond = sampleSecond;
+                double relativeSecond = MAX(0.0, sampleSecond - firstSampleSecond);
+                if (relativeSecond + 0.001 < nextFrameSecond) {
+                    CFRelease(sample);
+                    continue;
+                }
+                do { nextFrameSecond += (1.0 / 6.0); }
+                while (nextFrameSecond <= relativeSecond);
+
                 CVPixelBufferRef pixelBuffer = CMSampleBufferGetImageBuffer(sample);
                 CGImageRef image = NULL;
                 if (pixelBuffer) {
                     CIImage *ciImage = [CIImage imageWithCVPixelBuffer:pixelBuffer];
+                    ciImage = [ciImage imageByApplyingTransform:preferredTransform];
+                    CGRect extent = ciImage.extent;
+                    ciImage = [ciImage imageByApplyingTransform:
+                        CGAffineTransformMakeTranslation(-extent.origin.x, -extent.origin.y)];
+                    extent = ciImage.extent;
+                    CGFloat largestSide = MAX(extent.size.width, extent.size.height);
+                    if (largestSide > 960.0) {
+                        CGFloat scale = 960.0 / largestSide;
+                        ciImage = [ciImage imageByApplyingTransform:CGAffineTransformMakeScale(scale, scale)];
+                    }
                     image = [imageContext createCGImage:ciImage fromRect:ciImage.extent];
                 }
                 if (image) {
