@@ -1,9 +1,9 @@
 Package: com.yourcompany.vcam
 Name: vcam
-Version: 0.0.24
+Version: 0.0.25
 Architecture: iphoneos-arm
 Description: Virtual camera replacement with an image and video picker for rootful and rootless jailbreaks.
 Maintainer: vinhnv2507
 Author: vinhnv2507
 Section: Tweaks
-Depends: mobilesubstrate
+Depends: mobilesubstrate, ffmpeg

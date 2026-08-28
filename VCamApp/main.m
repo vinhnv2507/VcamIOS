@@ -4,6 +4,13 @@
 #import <AVFoundation/AVFoundation.h>
 #import "../VCamPaths.h"
 #include <math.h>
+#include <spawn.h>
+#include <sys/wait.h>
+#include <fcntl.h>
+#include <unistd.h>
+#include <errno.h>
+
+extern char **environ;
 
 #define VCamPreferencesPath VCamPreferencesFile()
 #define VCamStatusPath VCamStatusFile()
@@ -134,6 +141,7 @@ typedef void (^VCamVideoSelectionHandler)(PHAsset *asset);
 - (BOOL)prepareSharedStorage:(NSError **)error;
 - (void)applySelectedMediaAtPath:(NSString *)path;
 - (void)prepareVideoFramesAtPath:(NSString *)path;
+- (void)prepareVideoFramesWithFFmpegAtPath:(NSString *)path;
 - (void)prepareVideoFramesForAsset:(AVAsset *)asset;
 - (void)requestVideoAsset:(PHAsset *)photoAsset;
 - (void)presentPhotoKitVideoPicker;
@@ -588,7 +596,7 @@ didFinishPickingMediaWithInfo:(NSDictionary<UIImagePickerControllerInfoKey, id> 
                         NSFileProtectionKey: NSFileProtectionNone
                     } ofItemAtPath:destination error:nil];
                     VCamWriteImportStage(@"Đã sao chép video thành file cục bộ");
-                    [self exportVideoAsset:[AVURLAsset assetWithURL:[NSURL fileURLWithPath:destination]]];
+                    [self prepareVideoFramesWithFFmpegAtPath:destination];
                 } else {
                     [[NSFileManager defaultManager] removeItemAtPath:destination error:nil];
                     NSString *detail = error ? VCamDescribeError(error) : @"Photos đã tạo file video rỗng.";
@@ -695,7 +703,7 @@ didFinishPickingMediaWithInfo:(NSDictionary<UIImagePickerControllerInfoKey, id> 
 - (void)applySelectedMediaAtPath:(NSString *)destination {
     NSString *extension = destination.pathExtension.lowercaseString;
     if ([@[@"mov", @"mp4", @"m4v", @"3gp", @"3gpp"] containsObject:extension]) {
-        [self prepareVideoFramesAtPath:destination];
+        [self prepareVideoFramesWithFFmpegAtPath:destination];
         return;
     }
 
@@ -722,6 +730,122 @@ didFinishPickingMediaWithInfo:(NSDictionary<UIImagePickerControllerInfoKey, id> 
 - (void)prepareVideoFramesAtPath:(NSString *)path {
     AVURLAsset *asset = [AVURLAsset assetWithURL:[NSURL fileURLWithPath:path]];
     [self prepareVideoFramesForAsset:asset];
+}
+
+- (void)prepareVideoFramesWithFFmpegAtPath:(NSString *)path {
+    if (path.length == 0) return;
+    self.statusLabel.text = @"Đang giải mã video bằng FFmpeg…";
+    VCamWriteImportStage(@"Bắt đầu FFmpeg");
+
+    dispatch_async(dispatch_get_global_queue(QOS_CLASS_USER_INITIATED, 0), ^{
+        NSArray<NSString *> *candidatePaths = @[
+            @"/var/jb/usr/bin/ffmpeg",
+            @"/usr/bin/ffmpeg",
+            @"/usr/local/bin/ffmpeg"
+        ];
+        NSString *ffmpegPath = nil;
+        for (NSString *candidate in candidatePaths) {
+            if ([[NSFileManager defaultManager] isExecutableFileAtPath:candidate]) {
+                ffmpegPath = candidate;
+                break;
+            }
+        }
+
+        if (!ffmpegPath) {
+            dispatch_async(dispatch_get_main_queue(), ^{
+                VCamWriteImportStage(@"Không tìm thấy FFmpeg");
+                [self showMessage:@"Không tìm thấy FFmpeg. Hãy Refresh nguồn và cài lại VCam để Sileo cài dependency ffmpeg."];
+                [self reloadState];
+            });
+            return;
+        }
+
+        NSString *frameDirectory = VCamMediaFile(@"vcamframes");
+        NSError *directoryError = nil;
+        if (![[NSFileManager defaultManager] createDirectoryAtPath:frameDirectory
+            withIntermediateDirectories:NO attributes:@{NSFilePosixPermissions: @0755}
+            error:&directoryError]) {
+            dispatch_async(dispatch_get_main_queue(), ^{
+                [self showMessage:VCamDescribeError(directoryError)];
+                [self reloadState];
+            });
+            return;
+        }
+
+        NSString *outputPattern = [frameDirectory stringByAppendingPathComponent:@"frame-%05d.jpg"];
+        NSString *logPath = VCamMediaFile(@"ffmpeg.log");
+        posix_spawn_file_actions_t actions;
+        posix_spawn_file_actions_init(&actions);
+        posix_spawn_file_actions_addopen(&actions, STDOUT_FILENO, logPath.fileSystemRepresentation,
+            O_WRONLY | O_CREAT | O_TRUNC, 0644);
+        posix_spawn_file_actions_addopen(&actions, STDERR_FILENO, logPath.fileSystemRepresentation,
+            O_WRONLY | O_CREAT | O_TRUNC, 0644);
+
+        const char *executable = ffmpegPath.fileSystemRepresentation;
+        const char *input = path.fileSystemRepresentation;
+        const char *output = outputPattern.fileSystemRepresentation;
+        char *const arguments[] = {
+            (char *)executable,
+            "-nostdin", "-hide_banner", "-loglevel", "error", "-y",
+            "-threads", "1", "-i", (char *)input,
+            "-t", "15", "-map", "0:v:0", "-an", "-sn",
+            "-vf", "fps=6,scale=960:960:force_original_aspect_ratio=decrease",
+            "-frames:v", "90", "-q:v", "4", (char *)output,
+            NULL
+        };
+
+        pid_t processID = 0;
+        int spawnResult = posix_spawn(&processID, executable, &actions, NULL, arguments, environ);
+        posix_spawn_file_actions_destroy(&actions);
+        int processStatus = 0;
+        if (spawnResult == 0) {
+            VCamWriteImportStage(@"FFmpeg đang chạy");
+            while (waitpid(processID, &processStatus, 0) == -1 && errno == EINTR) {}
+        }
+
+        NSArray<NSString *> *files = [[NSFileManager defaultManager]
+            contentsOfDirectoryAtPath:frameDirectory error:nil];
+        NSPredicate *jpegPredicate = [NSPredicate predicateWithBlock:^BOOL(NSString *file, NSDictionary *bindings) {
+            return [file.pathExtension.lowercaseString isEqualToString:@"jpg"];
+        }];
+        NSArray<NSString *> *frames = [files filteredArrayUsingPredicate:jpegPredicate];
+        BOOL exitedSuccessfully = spawnResult == 0 && WIFEXITED(processStatus) && WEXITSTATUS(processStatus) == 0;
+
+        if (exitedSuccessfully && frames.count > 0) {
+            for (NSString *file in frames) {
+                NSString *framePath = [frameDirectory stringByAppendingPathComponent:file];
+                [[NSFileManager defaultManager] setAttributes:@{
+                    NSFilePosixPermissions: @0644,
+                    NSFileProtectionKey: NSFileProtectionNone
+                } ofItemAtPath:framePath error:nil];
+            }
+            VCamWriteImportStage([NSString stringWithFormat:@"FFmpeg đã tạo %lu frame",
+                (unsigned long)frames.count]);
+            [[NSFileManager defaultManager] removeItemAtPath:logPath error:nil];
+            dispatch_async(dispatch_get_main_queue(), ^{
+                [self applySelectedMediaAtPath:frameDirectory];
+            });
+            return;
+        }
+
+        NSString *log = [NSString stringWithContentsOfFile:logPath encoding:NSUTF8StringEncoding error:nil] ?: @"";
+        if (log.length > 1200) log = [log substringFromIndex:log.length - 1200];
+        NSString *detail = nil;
+        if (spawnResult != 0) {
+            detail = [NSString stringWithFormat:@"Không chạy được FFmpeg (posix_spawn=%d).", spawnResult];
+        } else {
+            detail = [NSString stringWithFormat:@"FFmpeg dừng với mã %d. %@",
+                WIFEXITED(processStatus) ? WEXITSTATUS(processStatus) : -1,
+                log.length ? log : @"Không có log lỗi."];
+        }
+        [[NSFileManager defaultManager] removeItemAtPath:frameDirectory error:nil];
+        [[NSFileManager defaultManager] removeItemAtPath:logPath error:nil];
+        VCamWriteImportStage(@"FFmpeg xử lý thất bại");
+        dispatch_async(dispatch_get_main_queue(), ^{
+            [self showMessage:detail];
+            [self reloadState];
+        });
+    });
 }
 
 - (void)prepareVideoFramesForAsset:(AVAsset *)asset {
