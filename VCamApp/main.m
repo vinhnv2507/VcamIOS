@@ -543,11 +543,14 @@ didFinishPickingMediaWithInfo:(NSDictionary<UIImagePickerControllerInfoKey, id> 
 - (void)importVideoResourceForAsset:(PHAsset *)asset {
     PHAssetResource *selectedResource = nil;
     for (PHAssetResource *resource in [PHAssetResource assetResourcesForAsset:asset]) {
-        if (resource.type == PHAssetResourceTypeFullSizeVideo) {
+        // Prefer the original video resource. FullSizeVideo can represent an
+        // adjusted derivative whose private codec/composition fails with
+        // OSStatus -12437 on iOS 15.
+        if (resource.type == PHAssetResourceTypeVideo) {
             selectedResource = resource;
             break;
         }
-        if (!selectedResource && resource.type == PHAssetResourceTypeVideo) {
+        if (!selectedResource && resource.type == PHAssetResourceTypeFullSizeVideo) {
             selectedResource = resource;
         }
     }
@@ -585,7 +588,7 @@ didFinishPickingMediaWithInfo:(NSDictionary<UIImagePickerControllerInfoKey, id> 
                         NSFileProtectionKey: NSFileProtectionNone
                     } ofItemAtPath:destination error:nil];
                     VCamWriteImportStage(@"Đã sao chép video thành file cục bộ");
-                    [self applySelectedMediaAtPath:destination];
+                    [self exportVideoAsset:[AVURLAsset assetWithURL:[NSURL fileURLWithPath:destination]]];
                 } else {
                     [[NSFileManager defaultManager] removeItemAtPath:destination error:nil];
                     NSString *detail = error ? VCamDescribeError(error) : @"Photos đã tạo file video rỗng.";
@@ -598,8 +601,19 @@ didFinishPickingMediaWithInfo:(NSDictionary<UIImagePickerControllerInfoKey, id> 
 
 - (void)exportVideoAsset:(AVAsset *)asset {
     NSArray<NSString *> *presets = [AVAssetExportSession exportPresetsCompatibleWithAsset:asset];
-    NSString *preset = [presets containsObject:AVAssetExportPresetPassthrough]
-        ? AVAssetExportPresetPassthrough : AVAssetExportPresetHighestQuality;
+    NSString *preset = nil;
+    if ([presets containsObject:AVAssetExportPreset640x480]) {
+        preset = AVAssetExportPreset640x480;
+    } else if ([presets containsObject:AVAssetExportPresetMediumQuality]) {
+        preset = AVAssetExportPresetMediumQuality;
+    } else if ([presets containsObject:AVAssetExportPresetLowQuality]) {
+        preset = AVAssetExportPresetLowQuality;
+    }
+    if (!preset) {
+        [self showMessage:@"Video không hỗ trợ preset chuyển mã tương thích trên iOS 15."];
+        [self reloadState];
+        return;
+    }
     AVAssetExportSession *exporter = [[AVAssetExportSession alloc] initWithAsset:asset presetName:preset];
     if (!exporter) {
         dispatch_async(dispatch_get_main_queue(), ^{
@@ -632,6 +646,12 @@ didFinishPickingMediaWithInfo:(NSDictionary<UIImagePickerControllerInfoKey, id> 
     exporter.outputURL = [NSURL fileURLWithPath:temporary];
     exporter.outputFileType = fileType;
     exporter.shouldOptimizeForNetworkUse = YES;
+    double exportDuration = CMTimeGetSeconds(asset.duration);
+    if (isfinite(exportDuration) && exportDuration > 15.0) {
+        exporter.timeRange = CMTimeRangeMake(kCMTimeZero, CMTimeMakeWithSeconds(15.0, 600));
+    }
+    VCamWriteImportStage(@"Đang chuyển mã video tương thích");
+    self.statusLabel.text = @"Đang chuyển video sang định dạng tương thích…";
 
     [exporter exportAsynchronouslyWithCompletionHandler:^{
         if (exporter.status == AVAssetExportSessionStatusCompleted) {
@@ -641,9 +661,21 @@ didFinishPickingMediaWithInfo:(NSDictionary<UIImagePickerControllerInfoKey, id> 
             BOOL moved = [manager moveItemAtPath:temporary toPath:destination error:&moveError];
             dispatch_async(dispatch_get_main_queue(), ^{
                 if (moved) {
+                    [[NSFileManager defaultManager] setAttributes:@{
+                        NSFilePosixPermissions: @0666,
+                        NSFileProtectionKey: NSFileProtectionNone
+                    } ofItemAtPath:destination error:nil];
+                    if ([asset isKindOfClass:[AVURLAsset class]]) {
+                        NSString *sourcePath = ((AVURLAsset *)asset).URL.path;
+                        if ([sourcePath hasPrefix:VCamSharedDirectory()] &&
+                            ![sourcePath isEqualToString:destination]) {
+                            [manager removeItemAtPath:sourcePath error:nil];
+                        }
+                    }
+                    VCamWriteImportStage(@"Đã chuyển mã video tương thích");
                     [self applySelectedMediaAtPath:destination];
                 } else {
-                    [self showMessage:moveError.localizedDescription ?: @"Không thể lưu video đã nhập."];
+                    [self showMessage:moveError ? VCamDescribeError(moveError) : @"Không thể lưu video đã nhập."];
                     [self reloadState];
                 }
             });
@@ -651,7 +683,9 @@ didFinishPickingMediaWithInfo:(NSDictionary<UIImagePickerControllerInfoKey, id> 
             NSError *exportError = exporter.error;
             [[NSFileManager defaultManager] removeItemAtPath:temporary error:nil];
             dispatch_async(dispatch_get_main_queue(), ^{
-                [self showMessage:exportError.localizedDescription ?: @"Không thể xuất video đã chọn."];
+                VCamWriteImportStage(exportError ? [NSString stringWithFormat:@"Chuyển mã lỗi %@/%ld",
+                    exportError.domain, (long)exportError.code] : @"Chuyển mã video thất bại");
+                [self showMessage:exportError ? VCamDescribeError(exportError) : @"Không thể chuyển mã video đã chọn."];
                 [self reloadState];
             });
         }
