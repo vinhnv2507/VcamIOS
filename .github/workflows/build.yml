@@ -54,7 +54,18 @@ jobs:
           cp "$RUNNER_TEMP/roothide-devkit/devkit/roothide/libroothide.tbd" "$roothide_theos/vendor/lib/"
           make clean
           sed -i 's/^Architecture:.*/Architecture: iphoneos-arm64e/' control
-          THEOS="$roothide_theos" ARCHS=arm64e make package FINALPACKAGE=1 THEOS_PACKAGE_SCHEME=roothide
+          set +e
+          THEOS="$roothide_theos" ARCHS=arm64e make package FINALPACKAGE=1 THEOS_PACKAGE_SCHEME=roothide 2>&1 | tee "$RUNNER_TEMP/roothide-build.log"
+          build_status=${PIPESTATUS[0]}
+          if [ "$build_status" -ne 0 ]; then
+            # Mirror the tail into workflow annotations so failures remain
+            # diagnosable even when GitHub's log endpoint is unavailable.
+            tail -n 40 "$RUNNER_TEMP/roothide-build.log" | while IFS= read -r line; do
+              echo "::error::$line"
+            done
+            exit "$build_status"
+          fi
+          set -e
           roothide_deb="$(find packages -maxdepth 1 -name '*_iphoneos-arm64e.deb' -print -quit)"
           test -n "$roothide_deb"
           cp "$roothide_deb" built-packages/
