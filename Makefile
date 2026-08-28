@@ -1,4 +1,4 @@
-ARCHS = arm64
+ARCHS ?= arm64
 TARGET := iphone:clang:16.5:15.0
 
 # Sileo/Zebra reliably support gzip; Theos defaults to legacy raw LZMA.

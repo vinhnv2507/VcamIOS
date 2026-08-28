@@ -45,6 +45,8 @@ jobs:
           # Reuse the iOS SDK downloaded by the Theos action.
           mkdir -p "$roothide_theos/sdks"
           cp -a "$standard_theos/sdks/." "$roothide_theos/sdks/"
+          mkdir -p "$roothide_theos/toolchain"
+          cp -a "$standard_theos/toolchain/." "$roothide_theos/toolchain/"
           mkdir -p "$roothide_theos/vendor/include" "$roothide_theos/vendor/lib"
           cp -a "$standard_theos/vendor/include/." "$roothide_theos/vendor/include/" || true
           cp -a "$standard_theos/vendor/lib/." "$roothide_theos/vendor/lib/" || true
