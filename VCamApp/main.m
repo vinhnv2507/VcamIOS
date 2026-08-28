@@ -21,6 +21,22 @@ static void VCamWriteImportStage(NSString *stage) {
     } ofItemAtPath:VCamImportDiagnosticPath error:nil];
 }
 
+static NSString *VCamDescribeError(NSError *error) {
+    if (!error) return @"Lỗi không xác định.";
+    NSMutableArray<NSString *> *parts = [NSMutableArray array];
+    NSError *current = error;
+    for (NSInteger depth = 0; current && depth < 4; depth++) {
+        NSString *part = [NSString stringWithFormat:@"%@ (%@/%ld)",
+            current.localizedDescription ?: @"Lỗi", current.domain, (long)current.code];
+        NSString *reason = current.localizedFailureReason;
+        if (reason.length > 0) part = [part stringByAppendingFormat:@": %@", reason];
+        [parts addObject:part];
+        NSError *underlying = current.userInfo[NSUnderlyingErrorKey];
+        current = [underlying isKindOfClass:[NSError class]] ? underlying : nil;
+    }
+    return [parts componentsJoinedByString:@"\n↳ "];
+}
+
 typedef void (^VCamVideoSelectionHandler)(PHAsset *asset);
 
 @interface VCamVideoPickerController : UIViewController <UITableViewDataSource, UITableViewDelegate>
@@ -380,41 +396,9 @@ typedef void (^VCamVideoSelectionHandler)(PHAsset *asset);
 
 - (void)requestVideoAsset:(PHAsset *)photoAsset {
     if (!photoAsset) return;
-    VCamWriteImportStage(@"Bắt đầu yêu cầu video từ Photos");
-    self.statusLabel.text = @"Đang lấy video trực tiếp từ Photos…";
-
-    PHVideoRequestOptions *options = [[PHVideoRequestOptions alloc] init];
-    options.networkAccessAllowed = YES;
-    options.deliveryMode = PHVideoRequestOptionsDeliveryModeHighQualityFormat;
-    options.version = PHVideoRequestOptionsVersionCurrent;
-    options.progressHandler = ^(double progress, NSError *error, BOOL *stop, NSDictionary *info) {
-        dispatch_async(dispatch_get_main_queue(), ^{
-            self.statusLabel.text = [NSString stringWithFormat:@"Đang tải video từ Photos… %ld%%",
-                (long)llround(progress * 100.0)];
-        });
-    };
-
-    [[PHImageManager defaultManager] requestAVAssetForVideo:photoAsset options:options
-        resultHandler:^(AVAsset *asset, AVAudioMix *audioMix, NSDictionary *info) {
-            NSError *requestError = info[PHImageErrorKey];
-            BOOL cancelled = [info[PHImageCancelledKey] boolValue];
-            if (asset && !cancelled) {
-                VCamWriteImportStage(@"Photos đã trả AVAsset");
-                // PhotoKit invokes this block on an arbitrary queue. Enter
-                // prepareVideoFramesForAsset on main before touching UIKit.
-                dispatch_async(dispatch_get_main_queue(), ^{
-                    [self prepareVideoFramesForAsset:asset];
-                });
-                return;
-            }
-            dispatch_async(dispatch_get_main_queue(), ^{
-                NSString *detail = requestError ? [NSString stringWithFormat:@"%@ (%@/%ld)",
-                    requestError.localizedDescription, requestError.domain, (long)requestError.code]
-                    : (cancelled ? @"Yêu cầu video đã bị hủy." : @"Photos không trả về dữ liệu AVAsset.");
-                [self showMessage:detail];
-                [self reloadState];
-            });
-        }];
+    VCamWriteImportStage(@"Bắt đầu sao chép resource Photos");
+    self.statusLabel.text = @"Đang sao chép video an toàn từ Photos…";
+    [self importVideoResourceForAsset:photoAsset];
 }
 
 - (void)presentPickerForMediaType:(NSString *)mediaType {
@@ -576,40 +560,36 @@ didFinishPickingMediaWithInfo:(NSDictionary<UIImagePickerControllerInfoKey, id> 
     }
 
     NSString *extension = selectedResource.originalFilename.pathExtension.lowercaseString;
-    if (![@[@"mp4", @"mov", @"m4v"] containsObject:extension]) extension = @"mov";
+    if (![@[@"mp4", @"mov", @"m4v", @"3gp", @"3gpp"] containsObject:extension]) extension = @"mov";
     NSString *destination = VCamMediaFile(extension);
-    NSOutputStream *output = [NSOutputStream outputStreamToFileAtPath:destination append:NO];
-    [output open];
-    __block NSError *writeError = nil;
 
     PHAssetResourceRequestOptions *options = [[PHAssetResourceRequestOptions alloc] init];
     options.networkAccessAllowed = YES;
-    [[PHAssetResourceManager defaultManager] requestDataForAssetResource:selectedResource
+    options.progressHandler = ^(double progress) {
+        dispatch_async(dispatch_get_main_queue(), ^{
+            self.statusLabel.text = [NSString stringWithFormat:@"Đang sao chép video… %ld%%",
+                (long)llround(progress * 100.0)];
+        });
+    };
+    VCamWriteImportStage(@"Photos đang ghi file cục bộ");
+    [[PHAssetResourceManager defaultManager] writeDataForAssetResource:selectedResource
+        toFile:[NSURL fileURLWithPath:destination]
         options:options
-        dataReceivedHandler:^(NSData *data) {
-            if (writeError || data.length == 0) return;
-            const uint8_t *bytes = data.bytes;
-            NSInteger remaining = (NSInteger)data.length;
-            while (remaining > 0) {
-                NSInteger written = [output write:bytes maxLength:(NSUInteger)remaining];
-                if (written <= 0) {
-                    writeError = output.streamError ?: [NSError errorWithDomain:@"VCamVideoImport"
-                        code:2 userInfo:@{NSLocalizedDescriptionKey: @"Không thể ghi dữ liệu video vào bộ nhớ dùng chung."}];
-                    return;
-                }
-                bytes += written;
-                remaining -= written;
-            }
-        }
         completionHandler:^(NSError *error) {
-            [output close];
-            NSError *finalError = error ?: writeError;
             dispatch_async(dispatch_get_main_queue(), ^{
-                if (!finalError) {
+                NSNumber *fileSize = [[[NSFileManager defaultManager]
+                    attributesOfItemAtPath:destination error:nil] objectForKey:NSFileSize];
+                if (!error && fileSize.unsignedLongLongValue > 0) {
+                    [[NSFileManager defaultManager] setAttributes:@{
+                        NSFilePosixPermissions: @0666,
+                        NSFileProtectionKey: NSFileProtectionNone
+                    } ofItemAtPath:destination error:nil];
+                    VCamWriteImportStage(@"Đã sao chép video thành file cục bộ");
                     [self applySelectedMediaAtPath:destination];
                 } else {
                     [[NSFileManager defaultManager] removeItemAtPath:destination error:nil];
-                    [self showMessage:finalError.localizedDescription ?: @"Không thể lấy dữ liệu video từ Photos."];
+                    NSString *detail = error ? VCamDescribeError(error) : @"Photos đã tạo file video rỗng.";
+                    [self showMessage:detail];
                     [self reloadState];
                 }
             });
@@ -680,7 +660,7 @@ didFinishPickingMediaWithInfo:(NSDictionary<UIImagePickerControllerInfoKey, id> 
 
 - (void)applySelectedMediaAtPath:(NSString *)destination {
     NSString *extension = destination.pathExtension.lowercaseString;
-    if ([@[@"mov", @"mp4", @"m4v"] containsObject:extension]) {
+    if ([@[@"mov", @"mp4", @"m4v", @"3gp", @"3gpp"] containsObject:extension]) {
         [self prepareVideoFramesAtPath:destination];
         return;
     }
@@ -814,9 +794,10 @@ didFinishPickingMediaWithInfo:(NSDictionary<UIImagePickerControllerInfoKey, id> 
                 [self applySelectedMediaAtPath:frameDirectory];
             } else {
                 [[NSFileManager defaultManager] removeItemAtPath:frameDirectory error:nil];
-                NSString *detail = lastError ? [NSString stringWithFormat:@"%@ (%@/%ld)",
-                    lastError.localizedDescription, lastError.domain, (long)lastError.code]
+                NSString *detail = lastError ? VCamDescribeError(lastError)
                     : @"Không trích xuất được frame từ video.";
+                VCamWriteImportStage(lastError ? [NSString stringWithFormat:@"Frame lỗi %@/%ld",
+                    lastError.domain, (long)lastError.code] : @"Không tạo được frame");
                 [self showMessage:detail];
                 [self reloadState];
             }
