@@ -2,7 +2,6 @@
 #import <CoreFoundation/CoreFoundation.h>
 #import <Photos/Photos.h>
 #import <AVFoundation/AVFoundation.h>
-#import <CoreImage/CoreImage.h>
 #import "../VCamPaths.h"
 #include <math.h>
 
@@ -115,7 +114,7 @@ typedef void (^VCamVideoSelectionHandler)(PHAsset *asset);
 @property(nonatomic, strong) UILabel *statusLabel;
 @property(nonatomic, strong) UILabel *daemonStatusLabel;
 @property(nonatomic, strong) UIImageView *previewView;
-@property(nonatomic, strong) AVAssetReader *videoReader;
+@property(nonatomic, strong) AVAssetImageGenerator *videoGenerator;
 - (BOOL)prepareSharedStorage:(NSError **)error;
 - (void)applySelectedMediaAtPath:(NSString *)path;
 - (void)prepareVideoFramesAtPath:(NSString *)path;
@@ -726,7 +725,7 @@ didFinishPickingMediaWithInfo:(NSDictionary<UIImagePickerControllerInfoKey, id> 
         return;
     }
     VCamWriteImportStage(@"Bắt đầu chuẩn bị frame");
-    [self.videoReader cancelReading];
+    [self.videoGenerator cancelAllCGImageGeneration];
     self.statusLabel.text = @"Đang chuẩn bị video an toàn cho Camera…";
     dispatch_async(dispatch_get_global_queue(QOS_CLASS_USER_INITIATED, 0), ^{
         double duration = CMTimeGetSeconds(asset.duration);
@@ -739,10 +738,11 @@ didFinishPickingMediaWithInfo:(NSDictionary<UIImagePickerControllerInfoKey, id> 
             return;
         }
 
-        // Decode sequentially instead of issuing many random AVAssetImageGenerator
-        // seeks. The latter can remain pending forever for some HEVC/MOV assets on
-        // iOS 15. Keep the first 20 seconds at 6 fps for bounded RAM and disk use.
-        double preparedDuration = MIN(duration, 20.0);
+        // Keep processing bounded for the A10 memory/thermal budget. PhotoKit
+        // already provided a valid AVAsset, so AVAssetImageGenerator can ask
+        // AVFoundation for a <= 960 px CGImage without exposing a 4K YUV/BGRA
+        // decoder buffer to this process.
+        double preparedDuration = MIN(duration, 15.0);
         NSInteger frameCount = MAX(1, (NSInteger)ceil(preparedDuration * 6.0));
 
         NSString *frameDirectory = VCamMediaFile(@"vcamframes");
@@ -757,85 +757,24 @@ didFinishPickingMediaWithInfo:(NSDictionary<UIImagePickerControllerInfoKey, id> 
         }
 
         @try {
-        AVAssetTrack *track = tracks.firstObject;
-        CGAffineTransform preferredTransform = track.preferredTransform;
-
-        NSError *readerError = nil;
-        AVAssetReader *reader = [[AVAssetReader alloc] initWithAsset:asset error:&readerError];
-        NSDictionary *outputSettings = @{
-            // Keep decoded frames in the decoder's native YUV layout. A 4K
-            // BGRA frame is ~33 MB; 420v is ~12 MB and avoids jetsam on A10.
-            (NSString *)kCVPixelBufferPixelFormatTypeKey: @(kCVPixelFormatType_420YpCbCr8BiPlanarVideoRange),
-            (NSString *)kCVPixelBufferIOSurfacePropertiesKey: @{}
-        };
-        AVAssetReaderTrackOutput *output = [[AVAssetReaderTrackOutput alloc]
-            initWithTrack:track outputSettings:outputSettings];
-        output.alwaysCopiesSampleData = NO;
-        if (!reader || ![reader canAddOutput:output]) {
-            [[NSFileManager defaultManager] removeItemAtPath:frameDirectory error:nil];
-            dispatch_async(dispatch_get_main_queue(), ^{
-                NSString *detail = readerError ? [NSString stringWithFormat:@"%@ (%@/%ld)",
-                    readerError.localizedDescription, readerError.domain, (long)readerError.code]
-                    : @"Không thể tạo bộ giải mã video.";
-                [self showMessage:detail];
-                [self reloadState];
-            });
-            return;
-        }
-        [reader addOutput:output];
-        reader.timeRange = CMTimeRangeMake(kCMTimeZero, CMTimeMakeWithSeconds(preparedDuration, 600));
-        self.videoReader = reader;
-        if (![reader startReading]) {
-            NSError *startError = reader.error;
-            [[NSFileManager defaultManager] removeItemAtPath:frameDirectory error:nil];
-            dispatch_async(dispatch_get_main_queue(), ^{
-                self.videoReader = nil;
-                NSString *detail = startError ? [NSString stringWithFormat:@"%@ (%@/%ld)",
-                    startError.localizedDescription, startError.domain, (long)startError.code]
-                    : @"Không thể bắt đầu giải mã video.";
-                [self showMessage:detail];
-                [self reloadState];
-            });
-            return;
-        }
-        VCamWriteImportStage(@"Bộ giải mã đã bắt đầu");
+        AVAssetImageGenerator *generator = [[AVAssetImageGenerator alloc] initWithAsset:asset];
+        generator.appliesPreferredTrackTransform = YES;
+        generator.maximumSize = CGSizeMake(960.0, 960.0);
+        generator.requestedTimeToleranceBefore = CMTimeMake(1, 12);
+        generator.requestedTimeToleranceAfter = CMTimeMake(1, 12);
+        self.videoGenerator = generator;
+        VCamWriteImportStage(@"Bộ tạo ảnh đã bắt đầu");
 
         NSInteger saved = 0;
         NSError *lastError = nil;
-        CIContext *imageContext = [CIContext contextWithOptions:nil];
-        double firstSampleSecond = NAN;
-        double nextFrameSecond = 0.0;
-        while (saved < frameCount) {
+        NSInteger consecutiveErrors = 0;
+        for (NSInteger index = 0; index < frameCount; index++) {
             @autoreleasepool {
-                CMSampleBufferRef sample = [output copyNextSampleBuffer];
-                if (!sample) break;
-                double sampleSecond = CMTimeGetSeconds(CMSampleBufferGetPresentationTimeStamp(sample));
-                if (!isfinite(sampleSecond)) sampleSecond = 0.0;
-                if (!isfinite(firstSampleSecond)) firstSampleSecond = sampleSecond;
-                double relativeSecond = MAX(0.0, sampleSecond - firstSampleSecond);
-                if (relativeSecond + 0.001 < nextFrameSecond) {
-                    CFRelease(sample);
-                    continue;
-                }
-                do { nextFrameSecond += (1.0 / 6.0); }
-                while (nextFrameSecond <= relativeSecond);
-
-                CVPixelBufferRef pixelBuffer = CMSampleBufferGetImageBuffer(sample);
-                CGImageRef image = NULL;
-                if (pixelBuffer) {
-                    CIImage *ciImage = [CIImage imageWithCVPixelBuffer:pixelBuffer];
-                    ciImage = [ciImage imageByApplyingTransform:preferredTransform];
-                    CGRect extent = ciImage.extent;
-                    ciImage = [ciImage imageByApplyingTransform:
-                        CGAffineTransformMakeTranslation(-extent.origin.x, -extent.origin.y)];
-                    extent = ciImage.extent;
-                    CGFloat largestSide = MAX(extent.size.width, extent.size.height);
-                    if (largestSide > 960.0) {
-                        CGFloat scale = 960.0 / largestSide;
-                        ciImage = [ciImage imageByApplyingTransform:CGAffineTransformMakeScale(scale, scale)];
-                    }
-                    image = [imageContext createCGImage:ciImage fromRect:ciImage.extent];
-                }
+                if (index == 0) VCamWriteImportStage(@"Đang trích frame đầu tiên");
+                NSError *frameError = nil;
+                CMTime requestedTime = CMTimeMakeWithSeconds((double)index / 6.0, 600);
+                CGImageRef image = [generator copyCGImageAtTime:requestedTime
+                    actualTime:NULL error:&frameError];
                 if (image) {
                     NSString *frameName = [NSString stringWithFormat:@"frame-%05ld.jpg", (long)saved];
                     NSString *framePath = [frameDirectory stringByAppendingPathComponent:frameName];
@@ -848,25 +787,29 @@ didFinishPickingMediaWithInfo:(NSDictionary<UIImagePickerControllerInfoKey, id> 
                         if (saved == 1 || (saved % 30) == 0) {
                             VCamWriteImportStage([NSString stringWithFormat:@"Đã lưu %ld frame", (long)saved]);
                         }
+                        consecutiveErrors = 0;
                     } else if (frameWriteError) {
                         lastError = frameWriteError;
+                        consecutiveErrors++;
                     }
                     CGImageRelease(image);
+                } else {
+                    if (frameError) lastError = frameError;
+                    consecutiveErrors++;
                 }
-                CFRelease(sample);
 
-                if ((saved % 6) == 0 || saved == frameCount) {
-                    NSInteger progress = (NSInteger)llround(((double)saved / (double)frameCount) * 100.0);
+                if ((index % 6) == 0 || index == frameCount - 1) {
+                    NSInteger progress = (NSInteger)llround(((double)(index + 1) / (double)frameCount) * 100.0);
                     dispatch_async(dispatch_get_main_queue(), ^{
                         self.statusLabel.text = [NSString stringWithFormat:@"Đang chuẩn bị video… %ld%%", (long)progress];
                     });
                 }
+                if (consecutiveErrors >= 6) break;
             }
         }
-        if (reader.status == AVAssetReaderStatusFailed) lastError = reader.error;
 
         dispatch_async(dispatch_get_main_queue(), ^{
-            self.videoReader = nil;
+            self.videoGenerator = nil;
             if (saved > 0) {
                 [self applySelectedMediaAtPath:frameDirectory];
             } else {
@@ -879,10 +822,10 @@ didFinishPickingMediaWithInfo:(NSDictionary<UIImagePickerControllerInfoKey, id> 
             }
         });
         } @catch (NSException *exception) {
-            [self.videoReader cancelReading];
+            [self.videoGenerator cancelAllCGImageGeneration];
             [[NSFileManager defaultManager] removeItemAtPath:frameDirectory error:nil];
             dispatch_async(dispatch_get_main_queue(), ^{
-                self.videoReader = nil;
+                self.videoGenerator = nil;
                 NSString *detail = [NSString stringWithFormat:@"%@ (%@)",
                     exception.reason ?: @"Không thể giải mã video.", exception.name];
                 [self showMessage:detail];
