@@ -12,6 +12,94 @@ static NSString *const VCamNotificationName = @"com.yourcompany.vcam.prefs.chang
 static NSString *const VCamImageMediaType = @"public.image";
 static NSString *const VCamMovieMediaType = @"public.movie";
 
+typedef void (^VCamVideoSelectionHandler)(PHAsset *asset);
+
+@interface VCamVideoPickerController : UIViewController <UITableViewDataSource, UITableViewDelegate>
+@property(nonatomic, strong) UITableView *tableView;
+@property(nonatomic, strong) PHFetchResult<PHAsset *> *assets;
+@property(nonatomic, strong) PHCachingImageManager *imageManager;
+@property(nonatomic, copy) VCamVideoSelectionHandler selectionHandler;
+@end
+
+@implementation VCamVideoPickerController
+
+- (void)viewDidLoad {
+    [super viewDidLoad];
+    self.title = @"Chọn video";
+    self.view.backgroundColor = [UIColor systemBackgroundColor];
+    self.navigationItem.leftBarButtonItem = [[UIBarButtonItem alloc]
+        initWithBarButtonSystemItem:UIBarButtonSystemItemCancel target:self action:@selector(cancel)];
+
+    PHFetchOptions *options = [[PHFetchOptions alloc] init];
+    options.sortDescriptors = @[[NSSortDescriptor sortDescriptorWithKey:@"creationDate" ascending:NO]];
+    self.assets = [PHAsset fetchAssetsWithMediaType:PHAssetMediaTypeVideo options:options];
+    self.imageManager = [[PHCachingImageManager alloc] init];
+
+    self.tableView = [[UITableView alloc] initWithFrame:self.view.bounds style:UITableViewStylePlain];
+    self.tableView.autoresizingMask = UIViewAutoresizingFlexibleWidth | UIViewAutoresizingFlexibleHeight;
+    self.tableView.dataSource = self;
+    self.tableView.delegate = self;
+    self.tableView.rowHeight = 82.0;
+    self.tableView.tableFooterView = [[UIView alloc] initWithFrame:CGRectZero];
+    [self.view addSubview:self.tableView];
+}
+
+- (void)cancel {
+    [self dismissViewControllerAnimated:YES completion:nil];
+}
+
+- (NSInteger)tableView:(UITableView *)tableView numberOfRowsInSection:(NSInteger)section {
+    return (NSInteger)self.assets.count;
+}
+
+- (UITableViewCell *)tableView:(UITableView *)tableView cellForRowAtIndexPath:(NSIndexPath *)indexPath {
+    static NSString *identifier = @"VCamVideoCell";
+    UITableViewCell *cell = [tableView dequeueReusableCellWithIdentifier:identifier];
+    if (!cell) {
+        cell = [[UITableViewCell alloc] initWithStyle:UITableViewCellStyleSubtitle reuseIdentifier:identifier];
+        cell.imageView.contentMode = UIViewContentModeScaleAspectFill;
+        cell.imageView.clipsToBounds = YES;
+        cell.accessoryType = UITableViewCellAccessoryDisclosureIndicator;
+    }
+
+    PHAsset *asset = self.assets[(NSUInteger)indexPath.row];
+    cell.tag = indexPath.row;
+    NSInteger totalSeconds = MAX(0, (NSInteger)llround(asset.duration));
+    cell.textLabel.text = [NSString stringWithFormat:@"Video %ld", (long)indexPath.row + 1];
+    cell.detailTextLabel.text = [NSString stringWithFormat:@"%ld:%02ld  •  %ld×%ld",
+        (long)(totalSeconds / 60), (long)(totalSeconds % 60),
+        (long)asset.pixelWidth, (long)asset.pixelHeight];
+    cell.imageView.image = nil;
+
+    CGFloat scale = [UIScreen mainScreen].scale;
+    PHImageRequestOptions *requestOptions = [[PHImageRequestOptions alloc] init];
+    requestOptions.deliveryMode = PHImageRequestOptionsDeliveryModeFastFormat;
+    requestOptions.resizeMode = PHImageRequestOptionsResizeModeFast;
+    [self.imageManager requestImageForAsset:asset
+        targetSize:CGSizeMake(112.0 * scale, 72.0 * scale)
+        contentMode:PHImageContentModeAspectFill
+        options:requestOptions
+        resultHandler:^(UIImage *result, NSDictionary *info) {
+            dispatch_async(dispatch_get_main_queue(), ^{
+                UITableViewCell *visibleCell = [tableView cellForRowAtIndexPath:indexPath];
+                if (visibleCell && visibleCell.tag == indexPath.row) visibleCell.imageView.image = result;
+            });
+        }];
+    return cell;
+}
+
+- (void)tableView:(UITableView *)tableView didSelectRowAtIndexPath:(NSIndexPath *)indexPath {
+    [tableView deselectRowAtIndexPath:indexPath animated:YES];
+    PHAsset *asset = self.assets[(NSUInteger)indexPath.row];
+    VCamVideoSelectionHandler handler = self.selectionHandler;
+    tableView.userInteractionEnabled = NO;
+    [self dismissViewControllerAnimated:YES completion:^{
+        if (handler) handler(asset);
+    }];
+}
+
+@end
+
 @interface VCamViewController : UIViewController <UIImagePickerControllerDelegate, UINavigationControllerDelegate>
 @property(nonatomic, strong) UISwitch *enabledSwitch;
 @property(nonatomic, strong) UILabel *statusLabel;
@@ -21,6 +109,9 @@ static NSString *const VCamMovieMediaType = @"public.movie";
 - (BOOL)prepareSharedStorage:(NSError **)error;
 - (void)applySelectedMediaAtPath:(NSString *)path;
 - (void)prepareVideoFramesAtPath:(NSString *)path;
+- (void)prepareVideoFramesForAsset:(AVAsset *)asset;
+- (void)requestVideoAsset:(PHAsset *)photoAsset;
+- (void)presentPhotoKitVideoPicker;
 - (void)importVideoResourceForAsset:(PHAsset *)asset;
 - (BOOL)copyPickedVideoAtURL:(NSURL *)sourceURL destination:(NSString **)destination error:(NSError **)error;
 @end
@@ -225,10 +316,81 @@ static NSString *const VCamMovieMediaType = @"public.movie";
 }
 
 - (void)selectVideo {
-    // PHPicker's NSItemProvider service is unstable for movies on some
-    // jailbroken iOS 15 installations. UIImagePicker is already reliable for
-    // images on this device and gives us a local, streamable movie URL.
-    [self presentPickerForMediaType:VCamMovieMediaType];
+    NSError *storageError = nil;
+    if (![self prepareSharedStorage:&storageError]) {
+        [self showMessage:storageError.localizedDescription ?: @"Không thể mở bộ nhớ dùng chung của VCam."];
+        return;
+    }
+
+    void (^continueWithAccess)(PHAuthorizationStatus) = ^(PHAuthorizationStatus status) {
+        dispatch_async(dispatch_get_main_queue(), ^{
+            if (status == PHAuthorizationStatusAuthorized || status == PHAuthorizationStatusLimited) {
+                [self presentPhotoKitVideoPicker];
+            } else {
+                [self showMessage:@"VCam cần quyền đọc Ảnh. Hãy vào Cài đặt > VCam > Ảnh và chọn Tất cả ảnh."];
+            }
+        });
+    };
+
+    if (@available(iOS 14, *)) {
+        PHAuthorizationStatus status = [PHPhotoLibrary authorizationStatusForAccessLevel:PHAccessLevelReadWrite];
+        if (status == PHAuthorizationStatusNotDetermined) {
+            [PHPhotoLibrary requestAuthorizationForAccessLevel:PHAccessLevelReadWrite handler:continueWithAccess];
+        } else {
+            continueWithAccess(status);
+        }
+    } else {
+        PHAuthorizationStatus status = [PHPhotoLibrary authorizationStatus];
+        if (status == PHAuthorizationStatusNotDetermined) {
+            [PHPhotoLibrary requestAuthorization:continueWithAccess];
+        } else {
+            continueWithAccess(status);
+        }
+    }
+}
+
+- (void)presentPhotoKitVideoPicker {
+    VCamVideoPickerController *picker = [[VCamVideoPickerController alloc] init];
+    __weak typeof(self) weakSelf = self;
+    picker.selectionHandler = ^(PHAsset *asset) {
+        [weakSelf requestVideoAsset:asset];
+    };
+    UINavigationController *navigation = [[UINavigationController alloc] initWithRootViewController:picker];
+    navigation.modalPresentationStyle = UIModalPresentationFullScreen;
+    [self presentViewController:navigation animated:YES completion:nil];
+}
+
+- (void)requestVideoAsset:(PHAsset *)photoAsset {
+    if (!photoAsset) return;
+    self.statusLabel.text = @"Đang lấy video trực tiếp từ Photos…";
+
+    PHVideoRequestOptions *options = [[PHVideoRequestOptions alloc] init];
+    options.networkAccessAllowed = YES;
+    options.deliveryMode = PHVideoRequestOptionsDeliveryModeHighQualityFormat;
+    options.version = PHVideoRequestOptionsVersionCurrent;
+    options.progressHandler = ^(double progress, NSError *error, BOOL *stop, NSDictionary *info) {
+        dispatch_async(dispatch_get_main_queue(), ^{
+            self.statusLabel.text = [NSString stringWithFormat:@"Đang tải video từ Photos… %ld%%",
+                (long)llround(progress * 100.0)];
+        });
+    };
+
+    [[PHImageManager defaultManager] requestAVAssetForVideo:photoAsset options:options
+        resultHandler:^(AVAsset *asset, AVAudioMix *audioMix, NSDictionary *info) {
+            NSError *requestError = info[PHImageErrorKey];
+            BOOL cancelled = [info[PHImageCancelledKey] boolValue];
+            if (asset && !cancelled) {
+                [self prepareVideoFramesForAsset:asset];
+                return;
+            }
+            dispatch_async(dispatch_get_main_queue(), ^{
+                NSString *detail = requestError ? [NSString stringWithFormat:@"%@ (%@/%ld)",
+                    requestError.localizedDescription, requestError.domain, (long)requestError.code]
+                    : (cancelled ? @"Yêu cầu video đã bị hủy." : @"Photos không trả về dữ liệu AVAsset.");
+                [self showMessage:detail];
+                [self reloadState];
+            });
+        }];
 }
 
 - (void)presentPickerForMediaType:(NSString *)mediaType {
@@ -244,10 +406,6 @@ static NSString *const VCamMovieMediaType = @"public.movie";
     UIImagePickerController *picker = [[UIImagePickerController alloc] init];
     picker.sourceType = UIImagePickerControllerSourceTypePhotoLibrary;
     picker.mediaTypes = @[mediaType];
-    if ([mediaType isEqualToString:VCamMovieMediaType]) {
-        picker.videoQuality = UIImagePickerControllerQualityTypeMedium;
-        picker.videoExportPreset = AVAssetExportPresetMediumQuality;
-    }
     picker.delegate = self;
     [self presentViewController:picker animated:YES completion:nil];
 }
@@ -521,10 +679,21 @@ didFinishPickingMediaWithInfo:(NSDictionary<UIImagePickerControllerInfoKey, id> 
 }
 
 - (void)prepareVideoFramesAtPath:(NSString *)path {
+    AVURLAsset *asset = [AVURLAsset assetWithURL:[NSURL fileURLWithPath:path]];
+    [self prepareVideoFramesForAsset:asset];
+}
+
+- (void)prepareVideoFramesForAsset:(AVAsset *)asset {
+    if (!asset) {
+        dispatch_async(dispatch_get_main_queue(), ^{
+            [self showMessage:@"Không nhận được dữ liệu video từ Photos."];
+            [self reloadState];
+        });
+        return;
+    }
     [self.videoReader cancelReading];
     self.statusLabel.text = @"Đang chuẩn bị video an toàn cho Camera…";
     dispatch_async(dispatch_get_global_queue(QOS_CLASS_USER_INITIATED, 0), ^{
-        AVURLAsset *asset = [AVURLAsset assetWithURL:[NSURL fileURLWithPath:path]];
         double duration = CMTimeGetSeconds(asset.duration);
         NSArray<AVAssetTrack *> *tracks = [asset tracksWithMediaType:AVMediaTypeVideo];
         if (!isfinite(duration) || duration <= 0.0 || tracks.count == 0) {
@@ -559,7 +728,9 @@ didFinishPickingMediaWithInfo:(NSDictionary<UIImagePickerControllerInfoKey, id> 
         NSError *readerError = nil;
         AVAssetReader *reader = [[AVAssetReader alloc] initWithAsset:asset error:&readerError];
         NSDictionary *outputSettings = @{
-            (NSString *)kCVPixelBufferPixelFormatTypeKey: @(kCVPixelFormatType_32BGRA),
+            // Keep decoded frames in the decoder's native YUV layout. A 4K
+            // BGRA frame is ~33 MB; 420v is ~12 MB and avoids jetsam on A10.
+            (NSString *)kCVPixelBufferPixelFormatTypeKey: @(kCVPixelFormatType_420YpCbCr8BiPlanarVideoRange),
             (NSString *)kCVPixelBufferIOSurfacePropertiesKey: @{}
         };
         AVAssetReaderTrackOutput *output = [[AVAssetReaderTrackOutput alloc]
