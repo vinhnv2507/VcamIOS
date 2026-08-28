@@ -11,6 +11,16 @@
 static NSString *const VCamNotificationName = @"com.yourcompany.vcam.prefs.changed";
 static NSString *const VCamImageMediaType = @"public.image";
 static NSString *const VCamMovieMediaType = @"public.movie";
+static NSString *const VCamImportDiagnosticPath = @"/private/var/tmp/com.yourcompany.vcam.import.plist";
+
+static void VCamWriteImportStage(NSString *stage) {
+    if (!stage) return;
+    [@{ @"stage": stage, @"timestamp": [NSDate date] }
+        writeToFile:VCamImportDiagnosticPath atomically:YES];
+    [[NSFileManager defaultManager] setAttributes:@{
+        NSFilePosixPermissions: @0666, NSFileProtectionKey: NSFileProtectionNone
+    } ofItemAtPath:VCamImportDiagnosticPath error:nil];
+}
 
 typedef void (^VCamVideoSelectionHandler)(PHAsset *asset);
 
@@ -302,6 +312,15 @@ typedef void (^VCamVideoSelectionHandler)(PHAsset *asset);
         self.daemonStatusLabel.text = @"mediaserverd: mở Camera rồi quay lại đây để kiểm tra";
         self.daemonStatusLabel.textColor = [UIColor secondaryLabelColor];
     }
+
+    NSDictionary *diagnostic = [NSDictionary dictionaryWithContentsOfFile:VCamImportDiagnosticPath];
+    NSDate *diagnosticDate = diagnostic[@"timestamp"];
+    NSString *diagnosticStage = diagnostic[@"stage"];
+    if ([diagnosticDate isKindOfClass:[NSDate class]] &&
+        [diagnosticStage isKindOfClass:[NSString class]] &&
+        -diagnosticDate.timeIntervalSinceNow < 600.0) {
+        self.statusLabel.text = [NSString stringWithFormat:@"Lần nhập video dừng ở: %@", diagnosticStage];
+    }
 }
 
 - (void)enabledChanged:(UISwitch *)sender {
@@ -362,6 +381,7 @@ typedef void (^VCamVideoSelectionHandler)(PHAsset *asset);
 
 - (void)requestVideoAsset:(PHAsset *)photoAsset {
     if (!photoAsset) return;
+    VCamWriteImportStage(@"Bắt đầu yêu cầu video từ Photos");
     self.statusLabel.text = @"Đang lấy video trực tiếp từ Photos…";
 
     PHVideoRequestOptions *options = [[PHVideoRequestOptions alloc] init];
@@ -380,7 +400,12 @@ typedef void (^VCamVideoSelectionHandler)(PHAsset *asset);
             NSError *requestError = info[PHImageErrorKey];
             BOOL cancelled = [info[PHImageCancelledKey] boolValue];
             if (asset && !cancelled) {
-                [self prepareVideoFramesForAsset:asset];
+                VCamWriteImportStage(@"Photos đã trả AVAsset");
+                // PhotoKit invokes this block on an arbitrary queue. Enter
+                // prepareVideoFramesForAsset on main before touching UIKit.
+                dispatch_async(dispatch_get_main_queue(), ^{
+                    [self prepareVideoFramesForAsset:asset];
+                });
                 return;
             }
             dispatch_async(dispatch_get_main_queue(), ^{
@@ -671,6 +696,9 @@ didFinishPickingMediaWithInfo:(NSDictionary<UIImagePickerControllerInfoKey, id> 
     NSMutableDictionary *preferences = [self preferences];
     preferences[@"enabled"] = @YES;
     preferences[@"mediaPath"] = destination;
+    if ([extension isEqualToString:@"vcamframes"]) {
+        [[NSFileManager defaultManager] removeItemAtPath:VCamImportDiagnosticPath error:nil];
+    }
     [[NSFileManager defaultManager] removeItemAtPath:VCamStatusPath error:nil];
     [self savePreferences:preferences];
     self.enabledSwitch.on = YES;
@@ -684,6 +712,12 @@ didFinishPickingMediaWithInfo:(NSDictionary<UIImagePickerControllerInfoKey, id> 
 }
 
 - (void)prepareVideoFramesForAsset:(AVAsset *)asset {
+    if (![NSThread isMainThread]) {
+        dispatch_async(dispatch_get_main_queue(), ^{
+            [self prepareVideoFramesForAsset:asset];
+        });
+        return;
+    }
     if (!asset) {
         dispatch_async(dispatch_get_main_queue(), ^{
             [self showMessage:@"Không nhận được dữ liệu video từ Photos."];
@@ -691,6 +725,7 @@ didFinishPickingMediaWithInfo:(NSDictionary<UIImagePickerControllerInfoKey, id> 
         });
         return;
     }
+    VCamWriteImportStage(@"Bắt đầu chuẩn bị frame");
     [self.videoReader cancelReading];
     self.statusLabel.text = @"Đang chuẩn bị video an toàn cho Camera…";
     dispatch_async(dispatch_get_global_queue(QOS_CLASS_USER_INITIATED, 0), ^{
@@ -763,6 +798,7 @@ didFinishPickingMediaWithInfo:(NSDictionary<UIImagePickerControllerInfoKey, id> 
             });
             return;
         }
+        VCamWriteImportStage(@"Bộ giải mã đã bắt đầu");
 
         NSInteger saved = 0;
         NSError *lastError = nil;
@@ -809,6 +845,9 @@ didFinishPickingMediaWithInfo:(NSDictionary<UIImagePickerControllerInfoKey, id> 
                         [[NSFileManager defaultManager] setAttributes:@{NSFilePosixPermissions: @0644,
                             NSFileProtectionKey: NSFileProtectionNone} ofItemAtPath:framePath error:nil];
                         saved++;
+                        if (saved == 1 || (saved % 30) == 0) {
+                            VCamWriteImportStage([NSString stringWithFormat:@"Đã lưu %ld frame", (long)saved]);
+                        }
                     } else if (frameWriteError) {
                         lastError = frameWriteError;
                     }
