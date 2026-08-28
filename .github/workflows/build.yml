@@ -46,6 +46,8 @@ jobs:
           mkdir -p "$roothide_theos/sdks"
           cp -a "$standard_theos/sdks/." "$roothide_theos/sdks/"
           mkdir -p "$roothide_theos/vendor/include" "$roothide_theos/vendor/lib"
+          cp -a "$standard_theos/vendor/include/." "$roothide_theos/vendor/include/" || true
+          cp -a "$standard_theos/vendor/lib/." "$roothide_theos/vendor/lib/" || true
           curl -L --fail --retry 3 https://github.com/RootHide/libroothide/files/12643716/devkit.zip -o "$RUNNER_TEMP/roothide-devkit.zip"
           unzip -q "$RUNNER_TEMP/roothide-devkit.zip" -d "$RUNNER_TEMP/roothide-devkit"
           cp "$RUNNER_TEMP/roothide-devkit/devkit/roothide/roothide.h" "$roothide_theos/vendor/include/"
