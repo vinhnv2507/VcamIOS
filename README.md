@@ -10,10 +10,13 @@ This repository includes a GitHub Actions workflow because Theos requires a Linu
 
 1. Push the repository to GitHub.
 2. Open the repository's **Actions** tab and run **Build tweak** (or push a commit).
-3. Open the completed workflow run, download the `vcam-deb` artifact, and copy the `.deb` file to the device.
-4. Install it with Sileo/Zebra, or with `dpkg -i` over SSH.
+3. Open the completed workflow run and download the `vcam-rootful-rootless-roothide-debs` artifact. It contains three files:
+   - `iphoneos-arm` for rootful jailbreaks
+   - `iphoneos-arm64` for standard rootless jailbreaks
+   - `iphoneos-arm64e` for RootHide jailbreaks
+4. Install the matching file with Sileo/Zebra, or with `dpkg -i` over SSH. The workflow also publishes all three packages to the `gh-pages` Sileo source.
 
-The package is configured for rootless jailbreaks (`iphoneos-arm64`).
+VCam requires a jailbroken device with tweak injection (Substrate/ElleKit). It cannot replace the camera on a stock, non-jailbroken iPhone.
 
 This works by hooking into `mediaserverd`, which is responsible for, among other things, connecting to the camera hardware and forwarding image data to interested clients (such as user-installed apps). VCam works in apps even if they don't have tweak injection
 

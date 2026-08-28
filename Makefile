@@ -30,4 +30,10 @@ VCam_FRAMEWORKS = UIKit Foundation Photos AVFoundation CoreMedia
 VCam_RESOURCE_DIRS = VCamApp/Resources
 VCam_CODESIGN_FLAGS = -SVCamApp/VCam.entitlements
 
+ifeq ($(THEOS_PACKAGE_SCHEME),roothide)
+vcam_LDFLAGS += -lroothide
+VCamOverlay_LDFLAGS += -lroothide
+VCam_LDFLAGS += -lroothide
+endif
+
 include $(THEOS_MAKE_PATH)/application.mk

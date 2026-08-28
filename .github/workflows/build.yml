@@ -36,12 +36,34 @@ jobs:
           test -n "$rootless_deb"
           cp "$rootless_deb" built-packages/
 
+      - name: Build RootHide package
+        run: |
+          set -e
+          standard_theos="$THEOS"
+          roothide_theos="$RUNNER_TEMP/theos-roothide"
+          git clone --depth 1 --recursive https://github.com/roothide/theos.git "$roothide_theos"
+          # Reuse the iOS SDK downloaded by the Theos action.
+          cp -a "$standard_theos/sdks" "$roothide_theos/"
+          mkdir -p "$roothide_theos/vendor/include" "$roothide_theos/vendor/lib"
+          curl -L --fail --retry 3 https://github.com/RootHide/libroothide/files/12643716/devkit.zip -o "$RUNNER_TEMP/roothide-devkit.zip"
+          unzip -q "$RUNNER_TEMP/roothide-devkit.zip" -d "$RUNNER_TEMP/roothide-devkit"
+          cp "$RUNNER_TEMP/roothide-devkit/devkit/roothide/roothide.h" "$roothide_theos/vendor/include/"
+          cp "$RUNNER_TEMP/roothide-devkit/devkit/roothide/libroothide.tbd" "$roothide_theos/vendor/lib/"
+          make clean
+          sed -i 's/^Architecture:.*/Architecture: iphoneos-arm64e/' control
+          THEOS="$roothide_theos" ARCHS=arm64e make package FINALPACKAGE=1 THEOS_PACKAGE_SCHEME=roothide
+          roothide_deb="$(find packages -maxdepth 1 -name '*_iphoneos-arm64e.deb' -print -quit)"
+          test -n "$roothide_deb"
+          cp "$roothide_deb" built-packages/
+
       - name: Validate Debian packages
         run: |
           rootful_deb="$(find built-packages -maxdepth 1 -name '*_iphoneos-arm.deb' -print -quit)"
           rootless_deb="$(find built-packages -maxdepth 1 -name '*_iphoneos-arm64.deb' -print -quit)"
+          roothide_deb="$(find built-packages -maxdepth 1 -name '*_iphoneos-arm64e.deb' -print -quit)"
           test -n "$rootful_deb"
           test -n "$rootless_deb"
+          test -n "$roothide_deb"
           test "$(dpkg-deb --field "$rootful_deb" Package)" = "com.yourcompany.vcam"
           test "$(dpkg-deb --field "$rootful_deb" Architecture)" = "iphoneos-arm"
           dpkg-deb --contents "$rootful_deb" | grep -q 'Library/MobileSubstrate/DynamicLibraries/vcam.dylib'
@@ -56,11 +78,14 @@ jobs:
           dpkg-deb --contents "$rootless_deb" | grep -q 'var/jb/Library/MobileSubstrate/DynamicLibraries/vcam.dylib'
           dpkg-deb --contents "$rootless_deb" | grep -q 'var/jb/Library/MobileSubstrate/DynamicLibraries/VCamOverlay.dylib'
           dpkg-deb --contents "$rootless_deb" | grep -q 'var/jb/Applications/VCam.app/VCam'
+          test "$(dpkg-deb --field "$roothide_deb" Package)" = "com.yourcompany.vcam"
+          test "$(dpkg-deb --field "$roothide_deb" Architecture)" = "iphoneos-arm64e"
+          dpkg-deb --contents "$roothide_deb" | grep -q 'Applications/VCam.app/VCam'
 
       - name: Upload packages
         uses: actions/upload-artifact@v4
         with:
-          name: vcam-rootful-rootless-debs
+          name: vcam-rootful-rootless-roothide-debs
           path: built-packages/*.deb
           if-no-files-found: error
 
@@ -72,8 +97,8 @@ jobs:
             gh release upload vcam-packages built-packages/*.deb --clobber
           else
             gh release create vcam-packages built-packages/*.deb \
-              --title "VCam rootful and rootless" \
-              --notes "Packages for rootful (iphoneos-arm) and rootless (iphoneos-arm64) jailbreaks. Sileo selects the correct package automatically."
+              --title "VCam rootful, rootless and RootHide" \
+              --notes "Packages for rootful (iphoneos-arm), rootless (iphoneos-arm64) and RootHide (iphoneos-arm64e) jailbreaks."
           fi
 
       - name: Create flat APT repository
@@ -94,13 +119,13 @@ jobs:
           (cd apt-repo && apt-ftparchive release .) > "$release_checksums"
           {
             echo "Origin: VCam"
-            echo "Label: VCam rootful and rootless"
+            echo "Label: VCam rootful, rootless and RootHide"
             echo "Suite: stable"
             echo "Version: $repo_version"
             echo "Codename: vcam"
-            echo "Architectures: iphoneos-arm iphoneos-arm64"
+            echo "Architectures: iphoneos-arm iphoneos-arm64 iphoneos-arm64e"
             echo "Components: main"
-            echo "Description: VCam repository for rootful and rootless jailbreaks"
+            echo "Description: VCam repository for rootful, rootless and RootHide jailbreaks"
             cat "$release_checksums"
           } > apt-repo/Release
           rm -f "$release_checksums"

@@ -10,6 +10,11 @@
 #include <unistd.h>
 #include <errno.h>
 
+#if __has_include(<roothide.h>)
+#include <roothide.h>
+#define VCAM_HAS_ROOTHIDE 1
+#endif
+
 extern char **environ;
 
 #define VCamPreferencesPath VCamPreferencesFile()
@@ -17,7 +22,7 @@ extern char **environ;
 static NSString *const VCamNotificationName = @"com.yourcompany.vcam.prefs.changed";
 static NSString *const VCamImageMediaType = @"public.image";
 static NSString *const VCamMovieMediaType = @"public.movie";
-static NSString *const VCamImportDiagnosticPath = @"/private/var/tmp/com.yourcompany.vcam.import.plist";
+#define VCamImportDiagnosticPath [VCamSharedDirectory() stringByAppendingPathComponent:@"com.yourcompany.vcam.import.plist"]
 
 static void VCamWriteImportStage(NSString *stage) {
     if (!stage) return;
@@ -738,11 +743,16 @@ didFinishPickingMediaWithInfo:(NSDictionary<UIImagePickerControllerInfoKey, id> 
     VCamWriteImportStage(@"Bắt đầu FFmpeg");
 
     dispatch_async(dispatch_get_global_queue(QOS_CLASS_USER_INITIATED, 0), ^{
-        NSArray<NSString *> *candidatePaths = @[
+        NSMutableArray<NSString *> *candidatePaths = [NSMutableArray array];
+#if VCAM_HAS_ROOTHIDE
+        NSString *roothideFFmpeg = jbroot(@"/usr/bin/ffmpeg");
+        if (roothideFFmpeg.length > 0) [candidatePaths addObject:roothideFFmpeg];
+#endif
+        [candidatePaths addObjectsFromArray:@[
             @"/var/jb/usr/bin/ffmpeg",
             @"/usr/bin/ffmpeg",
             @"/usr/local/bin/ffmpeg"
-        ];
+        ]];
         NSString *ffmpegPath = nil;
         for (NSString *candidate in candidatePaths) {
             if ([[NSFileManager defaultManager] isExecutableFileAtPath:candidate]) {
