@@ -152,6 +152,8 @@ typedef void (^VCamVideoSelectionHandler)(PHAsset *asset);
 - (void)presentPhotoKitVideoPicker;
 - (void)importVideoResourceForAsset:(PHAsset *)asset;
 - (BOOL)copyPickedVideoAtURL:(NSURL *)sourceURL destination:(NSString **)destination error:(NSError **)error;
+- (void)selectImage;
+- (void)selectVideo;
 @end
 
 @implementation VCamViewController
@@ -722,6 +724,7 @@ didFinishPickingMediaWithInfo:(NSDictionary<UIImagePickerControllerInfoKey, id> 
     NSMutableDictionary *preferences = [self preferences];
     preferences[@"enabled"] = @YES;
     preferences[@"mediaPath"] = destination;
+    [preferences removeObjectForKey:@"remoteURL"];
     if ([extension isEqualToString:@"vcamframes"]) {
         [[NSFileManager defaultManager] removeItemAtPath:VCamImportDiagnosticPath error:nil];
     }
@@ -1007,14 +1010,34 @@ didFinishPickingMediaWithInfo:(NSDictionary<UIImagePickerControllerInfoKey, id> 
 
 @interface VCamAppDelegate : UIResponder <UIApplicationDelegate>
 @property(nonatomic, strong) UIWindow *window;
+@property(nonatomic, strong) VCamViewController *controller;
 @end
 
 @implementation VCamAppDelegate
 - (BOOL)application:(UIApplication *)application didFinishLaunchingWithOptions:(NSDictionary *)launchOptions {
     self.window = [[UIWindow alloc] initWithFrame:[UIScreen mainScreen].bounds];
-    VCamViewController *controller = [[VCamViewController alloc] init];
-    self.window.rootViewController = [[UINavigationController alloc] initWithRootViewController:controller];
+    self.controller = [[VCamViewController alloc] init];
+    self.window.rootViewController = [[UINavigationController alloc] initWithRootViewController:self.controller];
     [self.window makeKeyAndVisible];
+    NSURL *url = launchOptions[UIApplicationLaunchOptionsURLKey];
+    if (url) [self handleURL:url];
+    return YES;
+}
+
+- (void)handleURL:(NSURL *)url {
+    if (![[url.scheme lowercaseString] isEqualToString:@"vcam"] ||
+        ![[url.host lowercaseString] isEqualToString:@"pick"]) return;
+    NSString *kind = url.path.lastPathComponent.lowercaseString;
+    dispatch_after(dispatch_time(DISPATCH_TIME_NOW, (int64_t)(0.35 * NSEC_PER_SEC)),
+        dispatch_get_main_queue(), ^{
+            if ([kind isEqualToString:@"image"]) [self.controller selectImage];
+            else if ([kind isEqualToString:@"video"]) [self.controller selectVideo];
+        });
+}
+
+- (BOOL)application:(UIApplication *)application openURL:(NSURL *)url
+    options:(NSDictionary<UIApplicationOpenURLOptionsKey, id> *)options {
+    [self handleURL:url];
     return YES;
 }
 @end

@@ -4,6 +4,8 @@ VirtualCamera tweak. Replaces the camera's image/video output with an arbitrary 
 
 After installation, open the **VCam** app from the Home Screen. Use **Chọn ảnh** or **Chọn video**, then enable the VCam switch. The app copies the selected media, updates the tweak preferences, and reloads the replacement automatically.
 
+The floating control also has image, video, and live-link actions. Disabling VCam hides both the floating button and its panel. Live image URLs are polled once per second; HLS, MP4, MJPEG, and RTSP video URLs are decoded by FFmpeg into safe camera frames.
+
 ## Build on Windows
 
 This repository includes a GitHub Actions workflow because Theos requires a Linux or macOS build environment.
