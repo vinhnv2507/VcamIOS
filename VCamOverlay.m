@@ -219,7 +219,11 @@ static void VCamPreferencesDidChange(CFNotificationCenterRef center, void *obser
     NSString *remoteURL = preferences[@"remoteURL"];
     if ([remoteURL isKindOfClass:[NSString class]] && remoteURL.length > 0) {
         NSString *mode = [preferences[@"remoteMode"] isEqualToString:@"video"] ? @"video" : @"image";
-        NSTimeInterval interval = [mode isEqualToString:@"video"] ? 0.18 : 1.0;
+        // 15 FPS is a practical ceiling for the iPhone 7 Plus: it removes the
+        // visibly jerky 6 FPS mode without making mediaserverd decode 30 large
+        // JPEGs per second.  The source itself may be 30 FPS; FFmpeg samples it
+        // at this rate before handing frames to VCam.
+        NSTimeInterval interval = [mode isEqualToString:@"video"] ? (1.0 / 15.0) : 1.0;
         self.sourceStatusLabel.text = [mode isEqualToString:@"video"]
             ? @"Video live độ trễ thấp" : @"Nguồn ảnh live cập nhật mỗi giây";
         if (!self.remoteTimer || ![self.remoteTimerMode isEqualToString:mode]) {
@@ -390,7 +394,7 @@ static void VCamPreferencesDidChange(CFNotificationCenterRef center, void *obser
         (char *)executable, "-nostdin", "-hide_banner", "-loglevel", "error",
         "-threads", "1", "-stream_loop", "-1", "-re", "-i", (char *)input,
         "-map", "0:v:0", "-an", "-sn",
-        "-vf", "fps=6,scale=960:960:force_original_aspect_ratio=decrease",
+        "-vf", "fps=15,scale=720:720:force_original_aspect_ratio=decrease",
         "-q:v", "5", "-f", "image2", "-update", "1", "-y", (char *)output, NULL
     };
     posix_spawn_file_actions_t actions;
