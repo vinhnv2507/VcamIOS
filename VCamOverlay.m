@@ -32,6 +32,7 @@ static NSString *const VCamPreferencesNotification = @"com.yourcompany.vcam.pref
 @property(nonatomic, strong) UIView *panel;
 @property(nonatomic, strong) UILabel *sourceStatusLabel;
 @property(nonatomic, strong) NSTimer *remoteTimer;
+@property(nonatomic, copy) NSString *remoteTimerMode;
 @property(nonatomic, strong) NSData *lastRemoteFrame;
 @property(nonatomic, assign) BOOL remoteRequestRunning;
 @property(nonatomic, assign) pid_t remoteFFmpegPID;
@@ -217,15 +218,21 @@ static void VCamPreferencesDidChange(CFNotificationCenterRef center, void *obser
 
     NSString *remoteURL = preferences[@"remoteURL"];
     if ([remoteURL isKindOfClass:[NSString class]] && remoteURL.length > 0) {
-        self.sourceStatusLabel.text = @"Nguồn live đang cập nhật mỗi giây";
-        if (!self.remoteTimer) {
-            self.remoteTimer = [NSTimer scheduledTimerWithTimeInterval:1.0 target:self
+        NSString *mode = [preferences[@"remoteMode"] isEqualToString:@"video"] ? @"video" : @"image";
+        NSTimeInterval interval = [mode isEqualToString:@"video"] ? 0.18 : 1.0;
+        self.sourceStatusLabel.text = [mode isEqualToString:@"video"]
+            ? @"Video live độ trễ thấp" : @"Nguồn ảnh live cập nhật mỗi giây";
+        if (!self.remoteTimer || ![self.remoteTimerMode isEqualToString:mode]) {
+            [self.remoteTimer invalidate];
+            self.remoteTimerMode = mode;
+            self.remoteTimer = [NSTimer scheduledTimerWithTimeInterval:interval target:self
                 selector:@selector(fetchRemoteFrame) userInfo:nil repeats:YES];
             [self fetchRemoteFrame];
         }
     } else {
         [self.remoteTimer invalidate];
         self.remoteTimer = nil;
+        self.remoteTimerMode = nil;
         self.sourceStatusLabel.text = @"Chọn ảnh, video hoặc nhập link live";
         [self stopRemoteFFmpeg];
     }
@@ -381,8 +388,9 @@ static void VCamPreferencesDidChange(CFNotificationCenterRef center, void *obser
     const char *output = destination.fileSystemRepresentation;
     char *const arguments[] = {
         (char *)executable, "-nostdin", "-hide_banner", "-loglevel", "error",
-        "-threads", "1", "-re", "-i", (char *)input, "-map", "0:v:0", "-an", "-sn",
-        "-vf", "fps=2,scale=1280:1280:force_original_aspect_ratio=decrease",
+        "-threads", "1", "-stream_loop", "-1", "-re", "-i", (char *)input,
+        "-map", "0:v:0", "-an", "-sn",
+        "-vf", "fps=6,scale=960:960:force_original_aspect_ratio=decrease",
         "-q:v", "5", "-f", "image2", "-update", "1", "-y", (char *)output, NULL
     };
     posix_spawn_file_actions_t actions;
