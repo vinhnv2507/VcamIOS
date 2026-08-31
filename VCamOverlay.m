@@ -394,7 +394,11 @@ static void VCamPreferencesDidChange(CFNotificationCenterRef center, void *obser
         (char *)executable, "-nostdin", "-hide_banner", "-loglevel", "error",
         "-threads", "1", "-stream_loop", "-1", "-re", "-i", (char *)input,
         "-map", "0:v:0", "-an", "-sn",
-        "-vf", "fps=30,scale=480:480:force_original_aspect_ratio=decrease",
+        // The sample MP4 is HLG/Bt.2020 (HDR). Convert it to the Bt.709 SDR
+        // space used by the camera buffer before writing JPEG; otherwise the
+        // implicit JPEG conversion washes out highlights and shifts contrast.
+        "-vf", "zscale=t=linear:npl=100,format=gbrpf32le,tonemap=mobius:desat=0,zscale=p=bt709:t=bt709:m=bt709:r=tv,fps=30,scale=480:480:force_original_aspect_ratio=decrease,format=yuv420p",
+        "-color_range", "tv", "-colorspace", "bt709", "-color_primaries", "bt709", "-color_trc", "bt709",
         "-q:v", "5", "-f", "image2", "-update", "1", "-y", (char *)output, NULL
     };
     posix_spawn_file_actions_t actions;

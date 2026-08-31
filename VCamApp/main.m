@@ -802,7 +802,8 @@ didFinishPickingMediaWithInfo:(NSDictionary<UIImagePickerControllerInfoKey, id> 
             "-nostdin", "-hide_banner", "-loglevel", "error", "-y",
             "-threads", "1", "-i", (char *)input,
             "-t", "15", "-map", "0:v:0", "-an", "-sn",
-            "-vf", "fps=6,scale=960:960:force_original_aspect_ratio=decrease",
+            "-vf", "zscale=t=linear:npl=100,format=gbrpf32le,tonemap=mobius:desat=0,zscale=p=bt709:t=bt709:m=bt709:r=tv,fps=6,scale=960:960:force_original_aspect_ratio=decrease,format=yuv420p",
+            "-color_range", "tv", "-colorspace", "bt709", "-color_primaries", "bt709", "-color_trc", "bt709",
             "-frames:v", "90", "-q:v", "4", (char *)output,
             NULL
         };
