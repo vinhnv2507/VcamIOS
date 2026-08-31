@@ -223,7 +223,7 @@ static void VCamPreferencesDidChange(CFNotificationCenterRef center, void *obser
         // visibly jerky 6 FPS mode without making mediaserverd decode 30 large
         // JPEGs per second.  The source itself may be 30 FPS; FFmpeg samples it
         // at this rate before handing frames to VCam.
-        NSTimeInterval interval = [mode isEqualToString:@"video"] ? (1.0 / 15.0) : 1.0;
+        NSTimeInterval interval = [mode isEqualToString:@"video"] ? (1.0 / 30.0) : 1.0;
         self.sourceStatusLabel.text = [mode isEqualToString:@"video"]
             ? @"Video live độ trễ thấp" : @"Nguồn ảnh live cập nhật mỗi giây";
         if (!self.remoteTimer || ![self.remoteTimerMode isEqualToString:mode]) {
@@ -394,7 +394,7 @@ static void VCamPreferencesDidChange(CFNotificationCenterRef center, void *obser
         (char *)executable, "-nostdin", "-hide_banner", "-loglevel", "error",
         "-threads", "1", "-stream_loop", "-1", "-re", "-i", (char *)input,
         "-map", "0:v:0", "-an", "-sn",
-        "-vf", "fps=15,scale=720:720:force_original_aspect_ratio=decrease",
+        "-vf", "fps=30,scale=480:480:force_original_aspect_ratio=decrease",
         "-q:v", "5", "-f", "image2", "-update", "1", "-y", (char *)output, NULL
     };
     posix_spawn_file_actions_t actions;
@@ -432,10 +432,13 @@ static void VCamPreferencesDidChange(CFNotificationCenterRef center, void *obser
     [[NSFileManager defaultManager] setAttributes:@{
         NSFilePosixPermissions: @0666, NSFileProtectionKey: NSFileProtectionNone
     } ofItemAtPath:destination error:nil];
-    NSMutableDictionary *updated = [[self mainPreferences] mutableCopy];
-    updated[@"enabled"] = @YES;
-    updated[@"mediaPath"] = destination;
-    [self writeMainPreferences:updated];
+    NSDictionary *preferences = [self mainPreferences];
+    if (![preferences[@"mediaPath"] isEqualToString:destination]) {
+        NSMutableDictionary *updated = [preferences mutableCopy];
+        updated[@"enabled"] = @YES;
+        updated[@"mediaPath"] = destination;
+        [self writeMainPreferences:updated];
+    }
     self.sourceStatusLabel.text = @"Video live: đang nhận hình";
 }
 

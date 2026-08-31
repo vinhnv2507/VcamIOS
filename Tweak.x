@@ -2,11 +2,34 @@
 #import <CoreFoundation/CoreFoundation.h>
 #import <objc/message.h>
 #import "image_utils.h"
+#import "VCamPaths.h"
+#include <sys/stat.h>
+#include <stdint.h>
 
 // Track whether media was loaded for the current prefs; reload when it changes.
 static BOOL vcam_needsLoad = YES;
+static uint64_t vcam_liveStamp = 0;
 
 static void vcam_ensureLoaded(void) {
+    // Live video updates a single JPEG many times per second.  Do not make the
+    // app rewrite preferences (and post a Darwin notification) for every
+    // frame; detect the file's nanosecond mtime directly from the camera hook.
+    if (!vcam_needsLoad) {
+        NSDictionary *prefs = [NSDictionary dictionaryWithContentsOfFile:VCamPreferencesFile()];
+        NSString *path = prefs[@"mediaPath"];
+        NSString *livePath = [VCamSharedDirectory() stringByAppendingPathComponent:@"media-live.jpg"];
+        if ([path isEqualToString:livePath]) {
+            struct stat st;
+            if (stat(path.fileSystemRepresentation, &st) == 0) {
+                uint64_t stamp = ((uint64_t)st.st_mtimespec.tv_sec << 32) ^
+                    (uint64_t)st.st_mtimespec.tv_nsec;
+                if (stamp != vcam_liveStamp) {
+                    vcam_liveStamp = stamp;
+                    vcam_needsLoad = YES;
+                }
+            }
+        }
+    }
     if (vcam_needsLoad) {
         // Reset the flag before loading so a failure doesn't busy-loop every frame.
         vcam_needsLoad = NO;
@@ -18,6 +41,7 @@ static void vcam_ensureLoaded(void) {
 static void vcamPrefsChanged(CFNotificationCenterRef center, void *observer,
                              CFStringRef name, const void *object, CFDictionaryRef userInfo) {
     vcam_needsLoad = YES;
+    vcam_liveStamp = 0;
 }
 
 static void vcamAdjustmentsChanged(CFNotificationCenterRef center, void *observer,
