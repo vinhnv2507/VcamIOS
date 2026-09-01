@@ -36,6 +36,8 @@ static NSString *const VCamPreferencesNotification = @"com.yourcompany.vcam.pref
 @property(nonatomic, strong) NSData *lastRemoteFrame;
 @property(nonatomic, assign) BOOL remoteRequestRunning;
 @property(nonatomic, assign) pid_t remoteFFmpegPID;
+@property(nonatomic, assign) NSInteger remoteFFmpegMode;
+@property(nonatomic, strong) NSDate *remoteFFmpegStartedAt;
 @property(nonatomic, strong) NSDate *lastRemoteVideoModification;
 - (void)refreshFromPreferences;
 @end
@@ -377,9 +379,11 @@ static void VCamPreferencesDidChange(CFNotificationCenterRef center, void *obser
         waitpid(self.remoteFFmpegPID, NULL, WNOHANG);
         self.remoteFFmpegPID = 0;
     }
+    self.remoteFFmpegMode = 0;
+    self.remoteFFmpegStartedAt = nil;
 }
 
-- (void)startRemoteFFmpegAtURL:(NSString *)urlString {
+- (void)startRemoteFFmpegAtURL:(NSString *)urlString useToneMap:(BOOL)useToneMap {
     NSString *ffmpeg = [self ffmpegPath];
     if (!ffmpeg) {
         self.sourceStatusLabel.text = @"Thiếu FFmpeg, hãy cài lại VCam";
@@ -390,6 +394,9 @@ static void VCamPreferencesDidChange(CFNotificationCenterRef center, void *obser
     const char *executable = ffmpeg.fileSystemRepresentation;
     const char *input = urlString.UTF8String;
     const char *output = destination.fileSystemRepresentation;
+    const char *filter = useToneMap
+        ? "zscale=t=linear:npl=100,format=gbrpf32le,tonemap=mobius:desat=0,zscale=p=bt709:t=bt709:m=bt709:r=tv,fps=30,scale=480:480:force_original_aspect_ratio=decrease,format=yuv420p"
+        : "fps=30,scale=480:480:force_original_aspect_ratio=decrease,format=yuv420p";
     char *const arguments[] = {
         (char *)executable, "-nostdin", "-hide_banner", "-loglevel", "error",
         "-threads", "1", "-stream_loop", "-1", "-re", "-i", (char *)input,
@@ -397,7 +404,7 @@ static void VCamPreferencesDidChange(CFNotificationCenterRef center, void *obser
         // The sample MP4 is HLG/Bt.2020 (HDR). Convert it to the Bt.709 SDR
         // space used by the camera buffer before writing JPEG; otherwise the
         // implicit JPEG conversion washes out highlights and shifts contrast.
-        "-vf", "zscale=t=linear:npl=100,format=gbrpf32le,tonemap=mobius:desat=0,zscale=p=bt709:t=bt709:m=bt709:r=tv,fps=30,scale=480:480:force_original_aspect_ratio=decrease,format=yuv420p",
+        "-vf", (char *)filter,
         "-color_range", "tv", "-colorspace", "bt709", "-color_primaries", "bt709", "-color_trc", "bt709",
         "-q:v", "5", "-f", "image2", "-update", "1", "-y", (char *)output, NULL
     };
@@ -410,6 +417,8 @@ static void VCamPreferencesDidChange(CFNotificationCenterRef center, void *obser
     posix_spawn_file_actions_destroy(&actions);
     if (result == 0) {
         self.remoteFFmpegPID = pid;
+        self.remoteFFmpegMode = useToneMap ? 1 : 2;
+        self.remoteFFmpegStartedAt = [NSDate date];
         self.sourceStatusLabel.text = @"Đang kết nối video live…";
     } else {
         self.sourceStatusLabel.text = @"Không chạy được video live";
@@ -422,14 +431,43 @@ static void VCamPreferencesDidChange(CFNotificationCenterRef center, void *obser
         int status = 0;
         if (waitpid(self.remoteFFmpegPID, &status, WNOHANG) == self.remoteFFmpegPID) {
             self.remoteFFmpegPID = 0;
+            self.remoteFFmpegStartedAt = nil;
+            if (self.remoteFFmpegMode == 1) {
+                // Some Procursus FFmpeg builds omit libzimg/zscale. Retry the
+                // same source with a universally supported SDR conversion.
+                [self startRemoteFFmpegAtURL:urlString useToneMap:NO];
+                self.sourceStatusLabel.text = @"Đang kết nối video live (tương thích)…";
+            } else {
+                self.remoteFFmpegMode = 3;
+                self.sourceStatusLabel.text = @"Video live bị ngắt hoặc URL không hỗ trợ";
+            }
+            return;
         }
     }
-    if (self.remoteFFmpegPID <= 0) [self startRemoteFFmpegAtURL:urlString];
+    if (self.remoteFFmpegPID <= 0 && self.remoteFFmpegMode == 0) {
+        [self startRemoteFFmpegAtURL:urlString useToneMap:YES];
+    }
 
     NSString *destination = [VCamSharedDirectory() stringByAppendingPathComponent:@"media-live.jpg"];
     NSDictionary *attributes = [[NSFileManager defaultManager] attributesOfItemAtPath:destination error:nil];
     NSDate *modified = attributes[NSFileModificationDate];
-    if (!modified || [modified isEqualToDate:self.lastRemoteVideoModification]) return;
+    if (!modified || [modified isEqualToDate:self.lastRemoteVideoModification]) {
+        if (self.remoteFFmpegPID > 0 && self.remoteFFmpegStartedAt &&
+            -self.remoteFFmpegStartedAt.timeIntervalSinceNow > 8.0 && !self.lastRemoteVideoModification) {
+            // A decoder that produced no frame is stuck or incompatible.
+            kill(self.remoteFFmpegPID, SIGTERM);
+            waitpid(self.remoteFFmpegPID, NULL, WNOHANG);
+            self.remoteFFmpegPID = 0;
+            if (self.remoteFFmpegMode == 1) {
+                [self startRemoteFFmpegAtURL:urlString useToneMap:NO];
+                self.sourceStatusLabel.text = @"Đang kết nối video live (tương thích)…";
+            } else {
+                self.remoteFFmpegMode = 3;
+                self.sourceStatusLabel.text = @"Video live không tạo được frame";
+            }
+        }
+        return;
+    }
     // Decoding verifies FFmpeg has completed this JPEG before the camera daemon reloads it.
     if (![UIImage imageWithContentsOfFile:destination]) return;
     self.lastRemoteVideoModification = modified;
