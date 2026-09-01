@@ -395,8 +395,11 @@ static void VCamPreferencesDidChange(CFNotificationCenterRef center, void *obser
     const char *input = urlString.UTF8String;
     const char *output = destination.fileSystemRepresentation;
     const char *filter = useToneMap
-        ? "zscale=t=linear:npl=100,format=gbrpf32le,tonemap=mobius:desat=0,zscale=p=bt709:t=bt709:m=bt709:r=tv,fps=30,scale=480:480:force_original_aspect_ratio=decrease,format=yuv420p"
-        : "fps=30,scale=480:480:force_original_aspect_ratio=decrease,format=yuv420p";
+        ? "zscale=t=linear:npl=100,format=gbrpf32le,tonemap=mobius:desat=0,zscale=p=bt709:t=bt709:m=bt709:r=tv,fps=30,scale=640:640:force_original_aspect_ratio=decrease,format=yuv420p"
+        // JPEG is full-range. Expand the MP4's limited-range YUV before
+        // encoding so blacks/highlights and contrast are not washed out when
+        // Core Image reads the JPEG as sRGB.
+        : "fps=30,scale=640:640:force_original_aspect_ratio=decrease:in_range=tv:out_range=pc,format=yuvj420p";
     char *const arguments[] = {
         (char *)executable, "-nostdin", "-hide_banner", "-loglevel", "error",
         "-threads", "1", "-stream_loop", "-1", "-re", "-i", (char *)input,
@@ -406,7 +409,7 @@ static void VCamPreferencesDidChange(CFNotificationCenterRef center, void *obser
         // implicit JPEG conversion washes out highlights and shifts contrast.
         "-vf", (char *)filter,
         "-color_range", "tv", "-colorspace", "bt709", "-color_primaries", "bt709", "-color_trc", "bt709",
-        "-q:v", "5", "-f", "image2", "-update", "1", "-y", (char *)output, NULL
+        "-q:v", "2", "-f", "image2", "-update", "1", "-y", (char *)output, NULL
     };
     posix_spawn_file_actions_t actions;
     posix_spawn_file_actions_init(&actions);

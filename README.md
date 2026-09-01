@@ -4,7 +4,7 @@ VirtualCamera tweak. Replaces the camera's image/video output with an arbitrary 
 
 After installation, open the **VCam** app from the Home Screen. Use **Chọn ảnh** or **Chọn video**, then enable the VCam switch. The app copies the selected media, updates the tweak preferences, and reloads the replacement automatically.
 
-The floating control also has image, video, and live-link actions. Disabling VCam hides both the floating button and its panel. Live image URLs are polled once per second; HLS, MP4, MJPEG, and RTSP video URLs are decoded by FFmpeg into 30 FPS camera frames at 480px (the low resolution keeps iPhone 7 Plus smooth). Live frames no longer rewrite the preferences plist on every frame. HDR tone-mapping automatically falls back to a compatible decoder if the installed FFmpeg lacks zscale.
+The floating control also has image, video, and live-link actions. Disabling VCam hides both the floating button and its panel. Live image URLs are polled once per second; HLS, MP4, MJPEG, and RTSP video URLs are decoded by FFmpeg into 30 FPS camera frames at 640px. Limited-range video is expanded correctly when zscale is unavailable, and HDR tone-mapping automatically falls back to this compatible decoder.
 
 ## Build on Windows
 
