@@ -1,0 +1,51 @@
+Package: com.yourcompany.vcam
+Architecture: iphoneos-arm
+Version: 0.0.33
+Section: Tweaks
+Maintainer: vinhnv2507
+Installed-Size: 364
+Depends: mobilesubstrate, ffmpeg
+Filename: ./com.yourcompany.vcam_0.0.33_iphoneos-arm.deb
+Size: 71912
+MD5sum: 48e3b274343c8f4f74c47c0a9031e2d8
+SHA1: d1579503f50d9d7a6b29128c0a648949d926e4eb
+SHA256: d804dcaf5582ba7a6c75af5f6b68c5c6c33911f969361d0dde59bc107e4c0f44
+SHA512: b2f785c9a50ff45588e108f71ac0ec365a6ec63e818b012fe26d82cbd05425713118f2787c3a6ef241748456eebd8dec62da2197128b6f034e0df1ae9246b04b
+Description: Virtual camera replacement with image and video picker for rootful, rootless and RootHide jailbreaks.
+Name: vcam
+Author: vinhnv2507
+
+Package: com.yourcompany.vcam
+Architecture: iphoneos-arm64
+Version: 0.0.33
+Section: Tweaks
+Maintainer: vinhnv2507
+Installed-Size: 364
+Depends: mobilesubstrate, ffmpeg
+Filename: ./com.yourcompany.vcam_0.0.33_iphoneos-arm64.deb
+Size: 72090
+MD5sum: 43f202e31af38e0585c9a16d6064ca0e
+SHA1: f657966635481dcc16e15e14b6daddea8598f4ca
+SHA256: 83e87c38b18fe43ab67b426cd520dad56b36aef014fef8aa31cc284b5b37e23d
+SHA512: bbf6b46e154ab1786a3d4bb948f2b3a29248a65ca824e59d843f9122ced87c98853afda34faac1d214c08fd0cb3ef14aeec5f04fa8bc6373757dd25b55acbffe
+Description: Virtual camera replacement with image and video picker for rootful, rootless and RootHide jailbreaks.
+Name: vcam
+Author: vinhnv2507
+
+Package: com.yourcompany.vcam
+Architecture: iphoneos-arm64e
+Version: 0.0.33
+Section: Tweaks
+Maintainer: vinhnv2507
+Installed-Size: 364
+Depends: mobilesubstrate, ffmpeg
+Filename: ./com.yourcompany.vcam_0.0.33_iphoneos-arm64e.deb
+Size: 71834
+MD5sum: 7d45455394fa1106da2c5f1496227947
+SHA1: 2102724d2a405a2ae1b242d1e2b16546b17539c2
+SHA256: d704ba4ee3da1d9525888fa4f603f6f1c690865da0d665bad23ba5dfffd1c02d
+SHA512: b943bafeeef7a2967a32cad22c7647b52cd244740b8d8a68c38cca72154e7a5d2683d412be4cd3cfe95630aa65825cdf4eb3c14d99ec5f7a9a7c5f979a716530
+Description: Virtual camera replacement with image and video picker for rootful, rootless and RootHide jailbreaks.
+Name: vcam
+Author: vinhnv2507
+

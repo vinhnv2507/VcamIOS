@@ -1,0 +1,29 @@
+Origin: VCam
+Label: VCam rootful, rootless and RootHide
+Suite: stable
+Version: 0.0.33
+Codename: vcam
+Architectures: iphoneos-arm iphoneos-arm64 iphoneos-arm64e
+Components: main
+Description: VCam repository for rootful, rootless and RootHide jailbreaks
+Date: Tue, 01 Sep 2026 05:03:04 +0000
+MD5Sum:
+ d49555a99ae000562197cc1d8193ccc3             2044 Packages
+ 447ee12ff03c3f6010754770eff55171              969 Packages.bz2
+ f72ece11ba965153bf5c8461e16bfa6e              849 Packages.gz
+ cb260a006056ad3060467b85c74d1327              892 Packages.xz
+SHA1:
+ 5b7107f141b044f02fb025691a158b120c09ac5e             2044 Packages
+ 0764cdd403f2ee2fdbbc45bf3ecf6196607805d8              969 Packages.bz2
+ 18563497254035389353148c86218e1f12c9db3b              849 Packages.gz
+ ffa9a1d9e100bacc3f3ec2a18b7dd798b2b939c4              892 Packages.xz
+SHA256:
+ ff880344accce4783a3c51dbfe0b08a574f81f832d1254c3ef6bff1b7e5a452f             2044 Packages
+ 50335403e8057a4642e2925edc3d8ec14bd8d17e76b1a4c94a7e99092e5b77a3              969 Packages.bz2
+ fb48c4fca15368dd40a4f01fada29e6bd9918b09419aaa9fe3639b7c286a9194              849 Packages.gz
+ 7b72c6cac3bb1c19a09353da10da61d5b13175cb8bcb13e8fca528d2400d753a              892 Packages.xz
+SHA512:
+ c205d7876db889bbe63d80df8b4fff0b22be6e1a1104ed7d5117733c7949e5e3d499ccc3d71c30aa963efcef67cabedee9aab1ee1b39db6694ef7f79ebd75972             2044 Packages
+ 6b0900fa753e09eb04ca59e92d8a98ee5dfd99e354f3c723b5e33c40caf31fe5edcade1da5d51157434e16d59253fd39304001c06b0fe99a9b8008cc2f89e50e              969 Packages.bz2
+ fcd82c1b831cbbdb2a6ec95e57763bcfcc22877792eefe1a0e9e7e78497ad3e31021f26dba41339aff3bcb7a22c0c2ccdf5ea73a06665035f3b27c771372bb80              849 Packages.gz
+ 43074bd62ecf1824eee7483b1d70cacca4200722929f80850220da0deab11fbbc2f5d0e01e61c747cab21545516bdac4e19d3edd43c3a1b07409b7c58c240a62              892 Packages.xz
